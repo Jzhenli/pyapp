@@ -3,6 +3,7 @@
  *
  * This stub launches the embedded Python runtime and starts the FastAPI application.
  * Uses Job Object to ensure child processes are terminated when parent exits.
+ * Uses Mutex to enforce single instance mode.
  */
 
 #include <windows.h>
@@ -10,6 +11,20 @@
 #include <stdio.h>
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    // Create mutex for single instance check
+    HANDLE hMutex = CreateMutexA(NULL, TRUE, "{{ app_name }}-SingleInstance");
+    if (hMutex == NULL || GetLastError() == ERROR_ALREADY_EXISTS) {
+        // Another instance is already running
+        if (hMutex) {
+            CloseHandle(hMutex);
+        }
+        MessageBoxA(NULL, 
+            "Application is already running.\n\nCheck the system tray or task manager.",
+            "{{ app_name }}", 
+            MB_OK | MB_ICONINFORMATION);
+        return 0;
+    }
+
     // Get the directory where the executable is located
     char exePath[MAX_PATH];
     GetModuleFileNameA(NULL, exePath, MAX_PATH);
@@ -45,6 +60,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         snprintf(errorMsg, sizeof(errorMsg),
             "Failed to create job object. Error Code: %lu", GetLastError());
         MessageBoxA(NULL, errorMsg, "{{ app_name }} - Error", MB_ICONERROR);
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
         return 1;
     }
 
@@ -59,6 +76,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             "Failed to set job object info. Error Code: %lu", GetLastError());
         MessageBoxA(NULL, errorMsg, "{{ app_name }} - Error", MB_ICONERROR);
         CloseHandle(hJob);
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
         return 1;
     }
 
@@ -90,6 +109,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             cmdLine, workDir, GetLastError());
         MessageBoxA(NULL, errorMsg, "{{ app_name }} - Error", MB_ICONERROR);
         CloseHandle(hJob);
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
         return 1;
     }
 
@@ -103,6 +124,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
         CloseHandle(hJob);
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
         return 1;
     }
 
@@ -116,6 +139,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(hJob);
+    ReleaseMutex(hMutex);
+    CloseHandle(hMutex);
 
     return 0;
 }
