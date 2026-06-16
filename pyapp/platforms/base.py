@@ -88,7 +88,7 @@ class BasePlatform(ABC):
 
     # ===== 公共方法 =====
 
-    def install_dependencies(self, project_dir: Path, config: Dict[str, Any], platform: str) -> Path:
+    def install_dependencies(self, project_dir: Path, config: Dict[str, Any], platform: str, arch: str = None) -> Path:
         """
         安装 pip 依赖到 bundles/{platform}/{app_name}-{version}/app_packages/
 
@@ -96,6 +96,7 @@ class BasePlatform(ABC):
             project_dir: 项目根目录
             config: 解析后的配置
             platform: 平台名称 (android/windows/linux)
+            arch: 目标架构 (x86_64, aarch64, armv7l)，用于跨架构编译
 
         Returns:
             app_packages 目录路径
@@ -124,7 +125,7 @@ class BasePlatform(ABC):
         if platform == "android":
             self._install_android_dependencies(all_dependencies, target, platform_config)
         else:
-            self._install_native_dependencies(all_dependencies, target, platform)
+            self._install_native_dependencies(all_dependencies, target, platform, arch)
 
         return target
 
@@ -174,34 +175,97 @@ class BasePlatform(ABC):
                     "--extra-index-url", extra_index_url,
                 ], check=False)
 
-    def _install_native_dependencies(self, dependencies: list, target: Path, platform: str) -> None:
-        """安装 Windows/Linux 平台依赖"""
+    def _install_native_dependencies(self, dependencies: list, target: Path, platform: str, arch: str = None) -> None:
+        """
+        安装 Windows/Linux 平台依赖
+
+        Args:
+            dependencies: 依赖列表
+            target: 目标目录
+            platform: 目标平台 (windows, linux)
+            arch: 目标架构 (x86_64, aarch64, armv7l)，用于跨架构编译
+        """
         current_platform = sys.platform
         is_cross_compile = (
             (platform == "windows" and current_platform != "win32") or
             (platform == "linux" and current_platform != "linux")
         )
 
-        if is_cross_compile:
-            self.logger.warning(
-                f"Cross-platform compilation detected (building {platform} on {current_platform})"
-            )
-            self.logger.warning("Some packages with C extensions may not work correctly")
-            cmd = [
-                sys.executable, "-m", "pip", "install"
-            ] + dependencies + [
-                "--target", str(target),
-                "--only-binary=:all:",
-            ]
-        else:
-            cmd = [
-                sys.executable, "-m", "pip", "install"
-            ] + dependencies + [
-                "--target", str(target),
-            ]
+        # 检测跨架构编译
+        is_cross_arch = False
+        if platform == "linux" and arch:
+            import platform as pf
+            machine = pf.machine().lower()
+            # 检测架构不匹配
+            if arch == "x86_64" and machine not in ("x86_64", "amd64"):
+                is_cross_arch = True
+            elif arch == "aarch64" and machine not in ("aarch64", "arm64"):
+                is_cross_arch = True
+            elif arch == "armv7l" and machine not in ("armv7l", "armv7"):
+                is_cross_arch = True
 
-        self.logger.info(f"Installing {len(dependencies)} dependencies for {platform}...")
-        subprocess.run(cmd, check=True)
+        cmd = [
+            sys.executable, "-m", "pip", "install"
+        ] + dependencies + [
+            "--target", str(target),
+        ]
+
+        if is_cross_compile or is_cross_arch:
+            self.logger.warning(
+                f"Cross-platform compilation detected (building {platform}/{arch or 'native'} on {current_platform})"
+            )
+
+            # 跨架构编译时使用 piwheels
+            if platform == "linux" and arch in ("aarch64", "armv7l"):
+                self.logger.info(f"Using piwheels for {arch} architecture")
+                cmd.extend([
+                    "--extra-index-url", "https://www.piwheels.org/simple",
+                ])
+
+            # 指定目标平台
+            if platform == "linux" and arch:
+                # pip 的平台标识
+                pip_platform = {
+                    "x86_64": "manylinux2014_x86_64",
+                    "aarch64": "manylinux2014_aarch64",
+                    "armv7l": "linux_armv7l",
+                }.get(arch)
+                if pip_platform:
+                    cmd.extend(["--platform", pip_platform])
+
+            # 只使用预编译包
+            cmd.extend([
+                "--only-binary=:all:",
+            ])
+
+            self.logger.warning("Some packages with C extensions may not be available")
+
+        self.logger.info(f"Installing {len(dependencies)} dependencies for {platform}{'/' + arch if arch else ''}...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.returncode != 0:
+            self.logger.warning(f"Batch install failed, trying individually...")
+            self.logger.debug(f"pip output: {result.stderr}")
+
+            # 逐个安装
+            failed = []
+            for dep in dependencies:
+                dep_cmd = [sys.executable, "-m", "pip", "install", dep, "--target", str(target)]
+
+                if platform == "linux" and arch in ("aarch64", "armv7l"):
+                    dep_cmd.extend(["--extra-index-url", "https://www.piwheels.org/simple"])
+
+                if is_cross_compile or is_cross_arch:
+                    dep_cmd.extend(["--only-binary=:all:"])
+
+                r = subprocess.run(dep_cmd, capture_output=True, text=True)
+                if r.returncode != 0:
+                    failed.append(dep)
+                    self.logger.warning(f"Failed to install {dep}")
+
+            if failed:
+                self.logger.error(f"Failed to install {len(failed)} packages: {', '.join(failed)}")
+                raise BuildError(f"Failed to install dependencies: {failed}")
 
     def sync_source_code(self, project_dir: Path, platform: str, config: Dict[str, Any] = None) -> Path:
         """

@@ -44,10 +44,18 @@ def create(platform, project_dir):
 @click.option("-t", "--type", "build_type", type=click.Choice(["debug", "release"]), default="debug", help="构建类型")
 @click.option("-d", "--project-dir", type=click.Path(exists=True), help="项目目录")
 @click.option("--no-create", is_flag=True, help="不自动创建平台项目结构")
-def build(platform, build_type, project_dir, no_create):
-    """构建平台安装包"""
+@click.option("--arch", type=click.Choice(["x86_64", "aarch64", "armv7l"]), default=None,
+              help="目标架构 (仅 Linux 平台有效，支持跨平台编译)")
+def build(platform, build_type, project_dir, no_create, arch):
+    """构建平台安装包
+
+    示例:
+      pyapp build linux                    # 构建 Linux x86_64
+      pyapp build linux --arch aarch64     # 构建 Linux ARM64
+      pyapp build linux --arch armv7l      # 构建 Linux ARM32 (树莓派)
+    """
     from .commands.build import build_platform
-    build_platform(platform, build_type, Path(project_dir) if project_dir else None, no_create)
+    build_platform(platform, build_type, Path(project_dir) if project_dir else None, no_create, arch)
 
 
 @main.command()

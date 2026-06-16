@@ -88,9 +88,21 @@ class LinuxPlatform(BasePlatform):
 
         self.logger.success(f"Linux project created at {bundle_dir}")
 
-    def build(self, project_dir: Path, config: Dict[str, Any], build_type: str = "debug") -> BuildResult:
-        """构建 Linux 安装包"""
+    def build(self, project_dir: Path, config: Dict[str, Any], build_type: str = "debug", arch: str = None) -> BuildResult:
+        """
+        构建 Linux 安装包
+
+        Args:
+            project_dir: 项目目录
+            config: 配置
+            build_type: 构建类型
+            arch: 目标架构 (x86_64, aarch64, armv7l)
+        """
         try:
+            # 默认架构
+            if not arch:
+                arch = "x86_64"
+
             # 1. 创建项目结构（如果不存在）
             bundle_dir = project_dir / "bundles" / "linux"
             if not bundle_dir.exists():
@@ -115,11 +127,11 @@ class LinuxPlatform(BasePlatform):
                 self._rmtree_safe(current_version_path)
 
             # 2. 下载 PBS (Python Build Standalone)
-            self.logger.step(1, 6, "Downloading Python runtime")
+            self.logger.step(1, 6, f"Downloading Python runtime for {arch}")
             from ..core.runtime import RuntimeManager
             runtime_manager = RuntimeManager()
             runtime_dir = bundle_dir / "runtime"
-            runtime_manager.get_runtime("linux", python_version, runtime_dir)
+            runtime_manager.get_runtime("linux", python_version, runtime_dir, arch=arch)
 
             # 3. 同步 Python 源码
             self.logger.step(2, 6, "Syncing Python source code")
@@ -131,7 +143,7 @@ class LinuxPlatform(BasePlatform):
 
             # 5. 安装依赖
             self.logger.step(4, 6, "Installing dependencies")
-            self.install_dependencies(project_dir, config, "linux")
+            self.install_dependencies(project_dir, config, "linux", arch=arch)
 
             # 6. 生成启动脚本
             self.logger.step(5, 6, "Generating launch scripts")
@@ -140,7 +152,7 @@ class LinuxPlatform(BasePlatform):
             # 7. 打包 tar.gz
             self.logger.step(6, 6, "Packaging tar.gz")
             dist_dir = self.ensure_dist_dir(project_dir)
-            tar_filename = f"{app_name}-{version}-linux-x86_64.tar.gz"
+            tar_filename = f"{app_name}-{version}-linux-{arch}.tar.gz"
             tar_path = dist_dir / tar_filename
 
             self._create_tarball(bundle_dir, tar_path)
