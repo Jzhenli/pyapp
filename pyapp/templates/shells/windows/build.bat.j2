@@ -1,0 +1,12 @@
+@echo off
+REM Build script for {{ app_name }} Windows Stub
+
+echo Building {{ app_name }} stub...
+
+REM Compile resource file
+windres app_stub.rc -O coff -o app_stub.res
+
+REM Compile stub
+gcc -o {{ app_name }}.exe app_stub.c app_stub.res -mwindows -O2
+
+echo Done!

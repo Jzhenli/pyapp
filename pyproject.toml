@@ -1,0 +1,29 @@
+[project]
+name = "pyapp-cli"
+version = "0.1.0"
+description = "跨平台打包工具 - 一份 Python 代码，一行命令，三平台安装包"
+authors = [{name = "Developer", email = "dev@example.com"}]
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0.0",
+    "jinja2>=3.0.0",
+    "watchdog>=3.0.0",
+    "tomli>=2.0.0;python_version<'3.11'",
+    "tomli-w>=1.0.0",
+    "requests>=2.28.0",
+    "rich>=13.0.0",
+    "packaging>=23.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "httpx>=0.24.0",
+]
+
+[project.scripts]
+pyapp = "pyapp.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,121 @@
+/**
+ * {{ app_name }} - Windows Application Stub
+ *
+ * This stub launches the embedded Python runtime and starts the FastAPI application.
+ * Uses Job Object to ensure child processes are terminated when parent exits.
+ */
+
+#include <windows.h>
+#include <shellapi.h>
+#include <stdio.h>
+
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    // Get the directory where the executable is located
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+
+    // Extract directory from exe path
+    char exeDir[MAX_PATH];
+    strcpy(exeDir, exePath);
+    char *lastSlash = strrchr(exeDir, '\\');
+    if (lastSlash) *lastSlash = '\0';
+
+    // Version directory name
+    const char *versionDir = "{{ app_name }}-{{ version }}";
+
+    // Build command line
+    char cmdLine[MAX_PATH * 3];
+    snprintf(cmdLine, sizeof(cmdLine),
+        "\"%s\\runtime\\python.exe\" -m {{ app_module }}",
+        exeDir);
+
+    // Set environment variables
+    SetEnvironmentVariableA("APP_MODE", "production");
+
+    char pythonpath[MAX_PATH * 4];
+    snprintf(pythonpath, sizeof(pythonpath),
+        "%s\\%s\\app;%s\\%s\\app_packages",
+        exeDir, versionDir, exeDir, versionDir);
+    SetEnvironmentVariableA("PYTHONPATH", pythonpath);
+
+    // Create Job Object to manage child processes
+    HANDLE hJob = CreateJobObjectA(NULL, NULL);
+    if (!hJob) {
+        char errorMsg[256];
+        snprintf(errorMsg, sizeof(errorMsg),
+            "Failed to create job object. Error Code: %lu", GetLastError());
+        MessageBoxA(NULL, errorMsg, "{{ app_name }} - Error", MB_ICONERROR);
+        return 1;
+    }
+
+    // Configure job to kill child processes when job is closed
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli = {0};
+    jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    
+    if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, 
+                                  &jeli, sizeof(jeli))) {
+        char errorMsg[256];
+        snprintf(errorMsg, sizeof(errorMsg),
+            "Failed to set job object info. Error Code: %lu", GetLastError());
+        MessageBoxA(NULL, errorMsg, "{{ app_name }} - Error", MB_ICONERROR);
+        CloseHandle(hJob);
+        return 1;
+    }
+
+    // Start the Python process
+    STARTUPINFOA si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {0};
+
+    // Set working directory
+    char workDir[MAX_PATH];
+    snprintf(workDir, sizeof(workDir), "%s\\%s\\app", exeDir, versionDir);
+
+    // Use CREATE_NEW_CONSOLE to show output window (helpful for debugging)
+    // Change to CREATE_NO_WINDOW for production release
+    DWORD creationFlags = CREATE_NEW_CONSOLE | CREATE_SUSPENDED;
+
+    BOOL success = CreateProcessA(
+        NULL,
+        cmdLine,
+        NULL, NULL, FALSE,
+        creationFlags,
+        NULL,
+        workDir,
+        &si, &pi);
+
+    if (!success) {
+        char errorMsg[512];
+        snprintf(errorMsg, sizeof(errorMsg),
+            "Failed to start application.\n\nCommand: %s\nWorkDir: %s\nError Code: %lu",
+            cmdLine, workDir, GetLastError());
+        MessageBoxA(NULL, errorMsg, "{{ app_name }} - Error", MB_ICONERROR);
+        CloseHandle(hJob);
+        return 1;
+    }
+
+    // Assign process to job object
+    if (!AssignProcessToJobObject(hJob, pi.hProcess)) {
+        char errorMsg[256];
+        snprintf(errorMsg, sizeof(errorMsg),
+            "Failed to assign process to job. Error Code: %lu", GetLastError());
+        MessageBoxA(NULL, errorMsg, "{{ app_name }} - Error", MB_ICONERROR);
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        CloseHandle(hJob);
+        return 1;
+    }
+
+    // Resume the process
+    ResumeThread(pi.hThread);
+
+    // Wait for the process to complete
+    WaitForSingleObject(pi.hProcess, INFINITE);
+
+    // Cleanup
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(hJob);
+
+    return 0;
+}

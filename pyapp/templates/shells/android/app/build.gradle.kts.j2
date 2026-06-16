@@ -1,0 +1,43 @@
+plugins {
+    id("com.android.application")
+    id("com.chaquo.python")
+}
+
+android {
+    namespace = "{{ package_name }}"
+    compileSdk = {{ target_sdk }}
+
+    defaultConfig {
+        applicationId = "{{ package_name }}"
+        minSdk = {{ min_sdk }}
+        targetSdk = {{ target_sdk }}
+        versionCode = 1
+        versionName = "{{ version }}"
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "{{ python_major_minor }}"
+        pip {
+            // Dependencies will be installed by pyapp
+        }
+    }
+    productFlavors {}
+}
+
+dependencies {
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("androidx.webkit:webkit:1.9.0")
+}

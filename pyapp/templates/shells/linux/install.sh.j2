@@ -1,0 +1,36 @@
+#!/bin/bash
+# {{ app_name }} - Installation Script
+
+set -e
+
+APP_NAME="{{ app_name }}"
+SERVICE_NAME="{{ service_name }}"
+INSTALL_DIR="{{ install_dir }}"
+
+echo "Installing ${APP_NAME}..."
+
+# Copy files
+mkdir -p ${INSTALL_DIR}
+cp -r . ${INSTALL_DIR}/
+
+# Set permissions
+chmod +x ${INSTALL_DIR}/run.sh
+chmod +x ${INSTALL_DIR}/runtime/bin/python3
+
+# Install systemd service
+if command -v systemctl &> /dev/null; then
+    cat ${INSTALL_DIR}/${SERVICE_NAME}.service | \
+        sed "s|{{ install_dir }}|${INSTALL_DIR}|g" | \
+        sed "s|{{ service_name }}|${SERVICE_NAME}|g" > \
+        /etc/systemd/system/${SERVICE_NAME}.service
+
+    systemctl daemon-reload
+    systemctl enable ${SERVICE_NAME}
+    echo "Service installed and enabled."
+    echo "Start with: sudo systemctl start ${SERVICE_NAME}"
+else
+    echo "systemctl not found. Service not installed."
+    echo "Start manually: ${INSTALL_DIR}/run.sh"
+fi
+
+echo "Installation complete."

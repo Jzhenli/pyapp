@@ -1,0 +1,34 @@
+// {{ app_name }} Resource File
+#include <windows.h>
+
+#define APP_NAME "{{ app_name }}"
+#define APP_VERSION "{{ version }}"
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", ""
+            VALUE "FileDescription", APP_NAME
+            VALUE "FileVersion", APP_VERSION
+            VALUE "InternalName", APP_NAME
+            VALUE "LegalCopyright", ""
+            VALUE "OriginalFilename", APP_NAME ".exe"
+            VALUE "ProductName", APP_NAME
+            VALUE "ProductVersion", APP_VERSION
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04B0
+    END
+END

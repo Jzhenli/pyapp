@@ -1,0 +1,12 @@
+#!/bin/bash
+# {{ app_name }} - Linux Launch Script
+
+cd "$(dirname "$0")"
+
+# Set environment variables
+export PATH="runtime/bin:$PATH"
+export PYTHONPATH="app:app_packages:$PYTHONPATH"
+export APP_MODE="production"
+
+# Start the application
+exec runtime/bin/python3 -m {{ app_module }}
