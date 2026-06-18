@@ -647,7 +647,7 @@ class MainActivity : AppCompatActivity() {{
     companion object {{
         private const val TAG = "MainActivity"
         private const val PYTHON_PORT = {port}
-        private const val STATUS_URL = "http://127.0.0.1:$PYTHON_PORT/api/status"
+        private const val STATUS_URL = "http://127.0.0.1:$PYTHON_PORT/api/health"
         private const val MAX_RETRY_COUNT = 30
         private const val RETRY_INTERVAL_MS = 500L
     }}

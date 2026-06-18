@@ -359,19 +359,34 @@ def _generate_frontend_template(project_dir: Path, name: str, module_name: str):
     (frontend_dir / "package.json").write_text(package_json, encoding="utf-8")
 
     # vite.config.ts
+    # Use environment variable VITE_API_PORT for development proxy
+    # Default to 18080 if not set
     vite_config = """import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   plugins: [vue()],
+  base: '/static/',  // Static files are mounted at /static in FastAPI
   server: {
+    // Proxy /api to backend during development
+    // Set VITE_API_PORT environment variable to match pyproject.toml port
     proxy: {
-      '/api': 'http://localhost:18080',
+      '/api': {
+        target: `http://localhost:${process.env.VITE_API_PORT || 18080}`,
+        changeOrigin: true,
+      }
     }
   }
 })
 """
     (frontend_dir / "vite.config.ts").write_text(vite_config, encoding="utf-8")
+
+    # .env.development - for local development
+    env_dev = """# Backend API port for development
+# Should match the port in pyproject.toml [tool.pyapp].port
+VITE_API_PORT=18080
+"""
+    (frontend_dir / ".env.development").write_text(env_dev, encoding="utf-8")
 
     # src/App.vue
     src_dir = frontend_dir / "src"
