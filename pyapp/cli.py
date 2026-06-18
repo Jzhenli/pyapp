@@ -33,10 +33,12 @@ def init(name, template, output_dir):
 @main.command()
 @click.argument("platform", type=click.Choice(["android", "windows", "linux", "all"]))
 @click.option("-d", "--project-dir", type=click.Path(exists=True), help="项目目录")
-def create(platform, project_dir):
+@click.option("--arch", type=str, default=None,
+              help="目标架构。Android: arm64-v8a, armeabi-v7a, x86_64 (多个用逗号分隔)")
+def create(platform, project_dir, arch):
     """创建平台项目结构"""
     from .commands.create import create_platform
-    create_platform(platform, Path(project_dir) if project_dir else None)
+    create_platform(platform, Path(project_dir) if project_dir else None, arch)
 
 
 @main.command()
@@ -44,15 +46,17 @@ def create(platform, project_dir):
 @click.option("-t", "--type", "build_type", type=click.Choice(["debug", "release"]), default="debug", help="构建类型")
 @click.option("-d", "--project-dir", type=click.Path(exists=True), help="项目目录")
 @click.option("--no-create", is_flag=True, help="不自动创建平台项目结构")
-@click.option("--arch", type=click.Choice(["x86_64", "aarch64", "armv7l"]), default=None,
-              help="目标架构 (仅 Linux 平台有效，支持跨平台编译)")
+@click.option("--arch", type=str, default=None,
+              help="目标架构。Linux: x86_64, aarch64, armv7l。Android: arm64-v8a, armeabi-v7a, x86_64 (多个用逗号分隔)")
 def build(platform, build_type, project_dir, no_create, arch):
     """构建平台安装包
 
     示例:
-      pyapp build linux                    # 构建 Linux x86_64
-      pyapp build linux --arch aarch64     # 构建 Linux ARM64
-      pyapp build linux --arch armv7l      # 构建 Linux ARM32 (树莓派)
+      pyapp build linux                         # 构建 Linux x86_64
+      pyapp build linux --arch aarch64          # 构建 Linux ARM64
+      pyapp build android                       # 构建 Android (使用 pyproject.toml 配置)
+      pyapp build android --arch arm64-v8a      # 构建 Android arm64-v8a
+      pyapp build android --arch arm64-v8a,armeabi-v7a  # 构建多架构
     """
     from .commands.build import build_platform
     build_platform(platform, build_type, Path(project_dir) if project_dir else None, no_create, arch)

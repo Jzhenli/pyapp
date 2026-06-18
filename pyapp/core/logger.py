@@ -2,9 +2,31 @@
 
 import logging
 import sys
+import os
 from pathlib import Path
 from typing import Optional, Dict
 from datetime import datetime
+
+
+class SafeStreamHandler(logging.StreamHandler):
+    """安全的流处理器，避免管道关闭时的错误"""
+
+    def flush(self):
+        """安全刷新，忽略 Bad file descriptor 错误"""
+        try:
+            if self.stream and hasattr(self.stream, "flush"):
+                self.stream.flush()
+        except OSError:
+            # 忽略管道关闭错误
+            pass
+
+    def emit(self, record):
+        """安全输出日志"""
+        try:
+            super().emit(record)
+        except OSError:
+            # 忽略管道关闭错误
+            pass
 
 
 class PyAppLogger:
@@ -32,8 +54,8 @@ class PyAppLogger:
 
     def _setup_handlers(self):
         """设置日志处理器"""
-        # 控制台处理器
-        console_handler = logging.StreamHandler(sys.stdout)
+        # 控制台处理器（使用安全处理器避免管道错误）
+        console_handler = SafeStreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)
         console_format = logging.Formatter(
             '%(levelname)s: %(message)s',

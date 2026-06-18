@@ -151,29 +151,89 @@ class BasePlatform(ABC):
 
     def _install_android_dependencies(self, dependencies: list, target: Path, platform_config: dict) -> None:
         """安装 Android 平台依赖（考虑 Chaquopy 兼容性）"""
-        # 使用 Chaquopy 的 PyPI 仓库
-        extra_index_url = platform_config.get("extra_index_url",
-            "https://chaquo.com/chaquopy/maven/org/python/pypi/simple")
-
-        # 安装依赖
-        cmd = [
-            sys.executable, "-m", "pip", "install"
-        ] + dependencies + [
-            "--target", str(target),
-            "--extra-index-url", extra_index_url,
-        ]
+        # 从配置获取 pip 索引设置
+        pip_index_url = platform_config.get("pip_index_url", "")
+        # 默认使用 Chaquopy 官方仓库和 PyPI 作为额外索引
+        pip_extra_index_urls = platform_config.get("pip_extra_index_urls", [
+            "https://chaquo.com/pypi-13.1",
+            "https://pypi.org/simple",
+        ])
+        pip_timeout = platform_config.get("pip_timeout", 120)
+        pip_proxy = platform_config.get("pip_proxy", "")
 
         self.logger.info(f"Installing {len(dependencies)} dependencies for Android...")
+        self.logger.info(f"Dependencies: {dependencies}")
+        self.logger.info(f"Target directory: {target}")
+
+        # 构建 pip 命令
+        cmd = [sys.executable, "-m", "pip", "install"]
+
+        # 添加索引配置
+        if pip_index_url:
+            cmd.extend(["--index-url", pip_index_url])
+            self.logger.info(f"Index URL: {pip_index_url}")
+
+        for extra_url in pip_extra_index_urls:
+            cmd.extend(["--extra-index-url", extra_url])
+            self.logger.info(f"Extra index URL: {extra_url}")
+
+        if pip_timeout:
+            cmd.extend(["--timeout", str(pip_timeout)])
+
+        if pip_proxy:
+            cmd.extend(["--proxy", pip_proxy])
+            self.logger.info(f"Using proxy: {pip_proxy}")
+
+        cmd.extend(dependencies)
+        cmd.extend(["--target", str(target)])
+
+        self.logger.info(f"Running: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if result.stdout:
+            self.logger.info(f"pip stdout:\n{result.stdout}")
+        if result.stderr:
+            self.logger.info(f"pip stderr:\n{result.stderr}")
+
         if result.returncode != 0:
-            self.logger.warning(f"Some dependencies failed to install, trying individually...")
+            self.logger.warning(f"Batch installation failed (exit code: {result.returncode}), trying individually...")
             # 如果安装失败，尝试逐个安装
+            failed = []
             for dep in dependencies:
-                subprocess.run([
-                    sys.executable, "-m", "pip", "install", dep,
-                    "--target", str(target),
-                    "--extra-index-url", extra_index_url,
-                ], check=False)
+                self.logger.info(f"Installing {dep}...")
+                dep_cmd = [sys.executable, "-m", "pip", "install"]
+
+                if pip_index_url:
+                    dep_cmd.extend(["--index-url", pip_index_url])
+                for extra_url in pip_extra_index_urls:
+                    dep_cmd.extend(["--extra-index-url", extra_url])
+                if pip_timeout:
+                    dep_cmd.extend(["--timeout", str(pip_timeout)])
+                if pip_proxy:
+                    dep_cmd.extend(["--proxy", pip_proxy])
+
+                dep_cmd.extend([dep, "--target", str(target)])
+
+                self.logger.info(f"Running: {' '.join(dep_cmd)}")
+                dep_result = subprocess.run(dep_cmd, capture_output=True, text=True)
+                if dep_result.returncode != 0:
+                    self.logger.error(f"Failed to install {dep}")
+                    if dep_result.stderr:
+                        self.logger.error(f"Error: {dep_result.stderr}")
+                    failed.append(dep)
+                else:
+                    self.logger.info(f"Successfully installed {dep}")
+                    if dep_result.stdout:
+                        self.logger.info(f"Output: {dep_result.stdout}")
+
+            if failed:
+                from ..core.errors import BuildError
+                raise BuildError(
+                    f"Failed to install {len(failed)} dependencies: {', '.join(failed)}",
+                    "Check the pip output for details. Some packages may not be available for Android platform."
+                )
+        else:
+            self.logger.info(f"Successfully installed {len(dependencies)} dependencies")
 
     def _install_native_dependencies(self, dependencies: list, target: Path, platform: str, arch: str = None) -> None:
         """

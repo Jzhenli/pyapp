@@ -24,25 +24,41 @@ class AndroidPlatform(BasePlatform):
         # 检查 JAVA_HOME
         java_home = os.environ.get("JAVA_HOME")
         if not java_home:
-            jdk_dir = Path.home() / ".android-jdk"
-            if not jdk_dir.exists():
+            jdk_base_dir = Path.home() / ".android-jdk"
+            if jdk_base_dir.exists():
+                # 查找实际的 JDK 目录（可能在子目录中）
+                for d in jdk_base_dir.iterdir():
+                    if d.is_dir() and (d / "bin" / "java.exe").exists() or (d / "bin" / "java").exists():
+                        java_home = str(d)
+                        os.environ["JAVA_HOME"] = java_home
+                        break
+                # 如果没找到子目录，检查根目录
+                if not java_home and (jdk_base_dir / "bin" / "java.exe").exists():
+                    java_home = str(jdk_base_dir)
+                    os.environ["JAVA_HOME"] = java_home
+            if not java_home:
                 missing.append("JDK not found. Run 'pyapp setup android'")
-            else:
-                os.environ["JAVA_HOME"] = str(jdk_dir)
 
         # 检查 ANDROID_HOME
         android_home = os.environ.get("ANDROID_HOME")
         if not android_home:
             sdk_dir = Path.home() / ".android-sdk"
-            if not sdk_dir.exists():
-                missing.append("Android SDK not found. Run 'pyapp setup android'")
-            else:
+            if sdk_dir.exists():
                 os.environ["ANDROID_HOME"] = str(sdk_dir)
+            else:
+                missing.append("Android SDK not found. Run 'pyapp setup android'")
 
         return len(missing) == 0, missing
 
-    def create(self, project_dir: Path, config: Dict[str, Any]) -> None:
-        """创建 Android Gradle 项目结构"""
+    def create(self, project_dir: Path, config: Dict[str, Any], arch: list = None) -> None:
+        """创建 Android 项目结构
+        
+        Args:
+            project_dir: 项目目录
+            config: 配置字典
+            arch: 目标架构列表，如 ["arm64-v8a"] 或 ["arm64-v8a", "armeabi-v7a"]
+                  如果为 None，则使用 pyproject.toml 中的配置
+        """
         from jinja2 import Environment, FileSystemLoader
 
         app_name = self.get_app_name(config)
@@ -54,6 +70,21 @@ class AndroidPlatform(BasePlatform):
         target_sdk = config.get("tool", {}).get("pyapp", {}).get("android", {}).get("target_sdk", 34)
         version = self.get_app_version(config)
         python_version = self.get_python_version(config)
+        port = self.get_port(config)
+
+        # pip 索引配置
+        android_config = config.get("tool", {}).get("pyapp", {}).get("android", {})
+        pip_index_url = android_config.get("pip_index_url", "")
+        pip_extra_index_urls = android_config.get("pip_extra_index_urls", [])
+        pip_timeout = android_config.get("pip_timeout", 120)
+        pip_proxy = android_config.get("pip_proxy", "")
+        permissions = android_config.get("permissions", ["INTERNET"])
+        
+        # CPU 架构配置（命令行参数优先于配置文件）
+        if arch is not None:
+            abi_filters = arch
+        else:
+            abi_filters = android_config.get("abi_filters", ["arm64-v8a"])
 
         # 模板目录
         template_dir = Path(__file__).parent.parent / "templates" / "shells" / "android"
@@ -76,6 +107,12 @@ class AndroidPlatform(BasePlatform):
             "version": version,
             "python_version": python_version,
             "python_major_minor": ".".join(python_version.split(".")[:2]),
+            "pip_index_url": pip_index_url,
+            "pip_extra_index_urls": pip_extra_index_urls,
+            "pip_timeout": pip_timeout,
+            "pip_proxy": pip_proxy,
+            "permissions": permissions,
+            "abi_filters": abi_filters,
         }
 
         # 渲染 settings.gradle.kts
@@ -94,17 +131,65 @@ class AndroidPlatform(BasePlatform):
         manifest_dir.mkdir(parents=True, exist_ok=True)
         self._render_template(jinja_env, "app/src/main/AndroidManifest.xml.j2", manifest_dir / "AndroidManifest.xml", template_vars)
 
-        # 创建 Java 源码目录和 MainActivity
-        java_package_dir = manifest_dir / "java" / Path(*package_name.split("."))
-        java_package_dir.mkdir(parents=True, exist_ok=True)
-        main_activity = java_package_dir / "MainActivity.java"
+        # 创建资源目录和文件
+        res_dir = manifest_dir / "res"
+
+        # mipmap-anydpi-v26 (自适应图标)
+        mipmap_dir = res_dir / "mipmap-anydpi-v26"
+        mipmap_dir.mkdir(parents=True, exist_ok=True)
+        for icon_file in ["ic_launcher.xml", "ic_launcher_round.xml"]:
+            src = template_dir / "app/src/main/res/mipmap-anydpi-v26" / icon_file
+            dst = mipmap_dir / icon_file
+            if src.exists() and not dst.exists():
+                shutil.copy2(src, dst)
+
+        # drawable
+        drawable_dir = res_dir / "drawable"
+        drawable_dir.mkdir(parents=True, exist_ok=True)
+        drawable_src = template_dir / "app/src/main/res/drawable/ic_launcher_foreground.xml"
+        if drawable_src.exists():
+            shutil.copy2(drawable_src, drawable_dir / "ic_launcher_foreground.xml")
+
+        # values
+        values_dir = res_dir / "values"
+        values_dir.mkdir(parents=True, exist_ok=True)
+
+        # colors.xml
+        colors_src = template_dir / "app/src/main/res/values/colors.xml"
+        if colors_src.exists():
+            shutil.copy2(colors_src, values_dir / "colors.xml")
+
+        # strings.xml (使用模板)
+        self._render_template(jinja_env, "app/src/main/res/values/strings.xml.j2", values_dir / "strings.xml", template_vars)
+
+        # themes.xml (使用模板)
+        self._render_template(jinja_env, "app/src/main/res/values/themes.xml.j2", values_dir / "themes.xml", template_vars)
+
+        # 创建 Kotlin 源码目录
+        kotlin_package_dir = manifest_dir / "java" / Path(*package_name.split("."))
+        kotlin_package_dir.mkdir(parents=True, exist_ok=True)
+        
+        # MainActivity.kt
+        main_activity = kotlin_package_dir / "MainActivity.kt"
         if not main_activity.exists():
-            main_activity.write_text(self._generate_main_activity(package_name))
+            main_activity.write_text(self._generate_main_activity(package_name, port))
+        
+        # PythonService.kt
+        python_service = kotlin_package_dir / "PythonService.kt"
+        if not python_service.exists():
+            python_service.write_text(self._generate_python_service(package_name, port))
 
         # 创建 gradle wrapper
         gradle_dir = bundle_dir / "gradle" / "wrapper"
         gradle_dir.mkdir(parents=True, exist_ok=True)
         self._create_gradle_wrapper(bundle_dir)
+
+        # 创建 gradle.properties
+        gradle_props = bundle_dir / "gradle.properties"
+        if not gradle_props.exists():
+            gradle_props_src = template_dir / "gradle.properties"
+            if gradle_props_src.exists():
+                shutil.copy2(gradle_props_src, gradle_props)
 
         # 创建 local.properties
         local_props = bundle_dir / "local.properties"
@@ -113,8 +198,16 @@ class AndroidPlatform(BasePlatform):
 
         self.logger.success(f"Android project created at {bundle_dir}")
 
-    def build(self, project_dir: Path, config: Dict[str, Any], build_type: str = "debug") -> BuildResult:
-        """构建 Android APK"""
+    def build(self, project_dir: Path, config: Dict[str, Any], build_type: str = "debug", arch: list = None) -> BuildResult:
+        """构建 Android APK
+        
+        Args:
+            project_dir: 项目目录
+            config: 配置字典
+            build_type: 构建类型 (debug/release)
+            arch: 目标架构列表，如 ["arm64-v8a"] 或 ["arm64-v8a", "armeabi-v7a"]
+                  如果为 None，则使用 pyproject.toml 中的配置
+        """
         try:
             # 1. 检查环境
             ok, missing = self.check_environment()
@@ -124,39 +217,92 @@ class AndroidPlatform(BasePlatform):
                     "Run 'pyapp setup android' to install missing dependencies"
                 )
 
-            # 2. 创建项目结构（如果不存在）
-            bundle_dir = project_dir / "bundles" / "android"
-            if not bundle_dir.exists():
-                self.create(project_dir, config)
+            # 获取架构配置（命令行参数优先于配置文件）
+            android_config = config.get("tool", {}).get("pyapp", {}).get("android", {})
+            if arch is not None:
+                abi_filters = arch
+            else:
+                abi_filters = android_config.get("abi_filters", ["arm64-v8a"])
 
-            # 3. 同步 Python 源码
+            # 2. 创建项目结构（如果 app 目录不存在）
+            bundle_dir = project_dir / "bundles" / "android"
+            app_dir = bundle_dir / "app"
+            if not app_dir.exists() or not (app_dir / "build.gradle.kts").exists():
+                self.create(project_dir, config, arch=abi_filters)
+
+            # 3. 同步 Python 源码到 Chaquopy 默认位置
             self.logger.step(1, 6, "Syncing Python source code")
-            self.sync_source_code(project_dir, "android", config)
+            self._sync_python_source(project_dir, bundle_dir, config)
 
             # 4. 同步前端资源
             self.logger.step(2, 6, "Syncing frontend resources")
-            self.sync_frontend_dist(project_dir, "android", config)
+            self._sync_frontend_dist(project_dir, bundle_dir, config)
 
-            # 5. 安装依赖
-            self.logger.step(3, 6, "Installing dependencies")
-            self.install_dependencies(project_dir, config, "android")
+            # 5. 更新 build.gradle.kts 中的依赖配置
+            self.logger.step(3, 6, "Configuring Chaquopy dependencies")
+            self._update_chaquopy_dependencies(bundle_dir, config)
 
             # 6. 运行 Gradle 构建
             self.logger.step(4, 6, "Running Gradle build")
+            self.logger.info(f"Target architectures: {', '.join(abi_filters)}")
             gradle_cmd = "gradlew.bat" if os.name == "nt" else "gradlew"
             gradle_path = bundle_dir / gradle_cmd
 
             build_task = "assembleDebug" if build_type == "debug" else "assembleRelease"
+            
+            # 确保环境变量传递给子进程
+            env = os.environ.copy()
+            if "JAVA_HOME" not in env or not Path(env["JAVA_HOME"]).exists():
+                jdk_base_dir = Path.home() / ".android-jdk"
+                if jdk_base_dir.exists():
+                    # 查找实际的 JDK 目录（可能在子目录中）
+                    for d in jdk_base_dir.iterdir():
+                        if d.is_dir() and ((d / "bin" / "java.exe").exists() or (d / "bin" / "java").exists()):
+                            env["JAVA_HOME"] = str(d)
+                            break
+            if "ANDROID_HOME" not in env:
+                sdk_dir = Path.home() / ".android-sdk"
+                if sdk_dir.exists():
+                    env["ANDROID_HOME"] = str(sdk_dir)
+            
+            # 使用 --console plain 让 Gradle 输出更清晰
             result = subprocess.run(
-                [str(gradle_path), build_task],
+                [str(gradle_path), "--console", "plain", build_task],
                 cwd=str(bundle_dir),
                 capture_output=True,
                 text=True,
+                env=env,
             )
 
+            # 输出 Gradle 结果
+            if result.stdout:
+                # 只显示关键信息
+                for line in result.stdout.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # 显示 Chaquopy 架构安装信息
+                    if "Chaquopy: Installing for" in line:
+                        arch = line.split("Installing for")[-1].strip()
+                        self.logger.info(f"")
+                        self.logger.info(f"Installing packages for {arch}:")
+                    elif "Installing collected packages:" in line:
+                        packages = line.split("Installing collected packages:")[-1].strip()
+                        for pkg in packages.split(", "):
+                            if pkg:
+                                self.logger.info(f"  - {pkg}")
+                    # 显示任务执行、成功/失败等
+                    elif any(keyword in line for keyword in [
+                        "BUILD", "FAILED", "SUCCESS", "actionable"
+                    ]):
+                        self.logger.info(f"  {line}")
+
             if result.returncode != 0:
+                # 显示错误信息
+                if result.stderr:
+                    self.logger.error(result.stderr)
                 raise BuildError(
-                    f"Gradle build failed:\n{result.stderr}",
+                    f"Gradle build failed",
                     "Check the Gradle output for details"
                 )
 
@@ -329,77 +475,697 @@ class AndroidPlatform(BasePlatform):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(content, encoding="utf-8")
 
-    def _generate_main_activity(self, package_name: str) -> str:
-        """生成 MainActivity Java 代码"""
-        return f'''package {package_name};
+    def _update_chaquopy_dependencies(self, bundle_dir: Path, config: Dict[str, Any]) -> None:
+        """更新 build.gradle.kts 中的 Chaquopy pip 依赖配置"""
+        import re
 
-import android.os.Bundle;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
-import android.webkit.WebSettings;
-import androidx.appcompat.app.AppCompatActivity;
+        # 获取依赖列表
+        dependencies = config.get("project", {}).get("dependencies", [])
+        android_config = config.get("tool", {}).get("pyapp", {}).get("android", {})
+        platform_dependencies = android_config.get("dependencies", [])
+        app_module = config.get("tool", {}).get("pyapp", {}).get("app_module", "app")
 
-public class MainActivity extends AppCompatActivity {{
-    private WebView webView;
+        # 合并依赖（平台特定依赖优先）
+        all_dependencies = self._merge_dependencies(dependencies, platform_dependencies)
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {{
-        super.onCreate(savedInstanceState);
+        if not all_dependencies:
+            self.logger.info("No dependencies to configure")
+            return
 
-        webView = new WebView(this);
-        setContentView(webView);
+        self.logger.info(f"Dependencies: {', '.join(all_dependencies)}")
 
-        WebSettings settings = webView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setAllowFileAccess(true);
+        # 获取 pip 配置
+        pip_index_url = android_config.get("pip_index_url", "")
+        pip_extra_index_urls = android_config.get("pip_extra_index_urls", [
+            "https://chaquo.com/pypi-13.1",
+            "https://pypi.org/simple",
+        ])
+        pip_timeout = android_config.get("pip_timeout", 120)
+        pip_proxy = android_config.get("pip_proxy", "")
 
-        webView.setWebViewClient(new WebViewClient());
+        # 读取并更新 build.gradle.kts
+        build_gradle_path = bundle_dir / "app" / "build.gradle.kts"
+        if not build_gradle_path.exists():
+            self.logger.warning("app/build.gradle.kts not found")
+            return
 
-        // 加载本地 FastAPI 服务
-        webView.loadUrl("http://127.0.0.1:18080");
+        content = build_gradle_path.read_text(encoding="utf-8")
+
+        # 更新 extractPackages 配置
+        extract_pattern = r'extractPackages\s*\([^)]*\)'
+        extract_line = f'extractPackages("{app_module}.resources")'
+        content = re.sub(extract_pattern, extract_line, content)
+
+        # 构建 pip 配置
+        pip_config_lines = []
+
+        if pip_index_url:
+            pip_config_lines.append(f'            options("--index-url", "{pip_index_url}")')
+
+        for extra_url in pip_extra_index_urls:
+            pip_config_lines.append(f'            options("--extra-index-url", "{extra_url}")')
+
+        if pip_timeout:
+            pip_config_lines.append(f'            options("--timeout", "{pip_timeout}")')
+
+        if pip_proxy:
+            pip_config_lines.append(f'            options("--proxy", "{pip_proxy}")')
+
+        # 添加依赖
+        for dep in all_dependencies:
+            pip_config_lines.append(f'            install("{dep}")')
+
+        # 替换 pip 块
+        pip_block = "pip {\n" + "\n".join(pip_config_lines) + "\n        }"
+
+        # 使用正则替换 pip 块
+        pattern = r'pip\s*\{[^}]*\}'
+        new_content = re.sub(pattern, pip_block, content, flags=re.DOTALL)
+
+        build_gradle_path.write_text(new_content, encoding="utf-8")
+        self.logger.success(f"Configured {len(all_dependencies)} dependencies")
+
+    def _sync_python_source(self, project_dir: Path, bundle_dir: Path, config: Dict[str, Any]) -> None:
+        """
+        同步 Python 源码到 Chaquopy 默认位置: app/src/main/python/
+        
+        Chaquopy 默认查找 app/src/main/python/ 目录下的 Python 文件。
+        """
+        src_dir = project_dir / "src"
+        python_target = bundle_dir / "app" / "src" / "main" / "python"
+        
+        if not src_dir.exists():
+            self.logger.warning(f"Source directory not found: {src_dir}")
+            return
+        
+        # 清理旧文件
+        if python_target.exists():
+            shutil.rmtree(python_target)
+        
+        python_target.mkdir(parents=True, exist_ok=True)
+        
+        # 复制 src/ 下的所有 Python 包到 app/src/main/python/
+        for item in src_dir.iterdir():
+            if item.is_dir():
+                # 复制 Python 包目录
+                target = python_target / item.name
+                shutil.copytree(item, target)
+                self.logger.info(f"Copied {item.name} → app/src/main/python/{item.name}")
+            elif item.suffix == ".py":
+                # 复制单个 Python 文件
+                shutil.copy2(item, python_target / item.name)
+                self.logger.info(f"Copied {item.name} → app/src/main/python/{item.name}")
+        
+        # 生成 bridge.py
+        app_module = config.get("tool", {}).get("pyapp", {}).get("app_module", "app")
+        bridge_py = python_target / "bridge.py"
+        bridge_py.write_text(self._generate_bridge_py(app_module), encoding="utf-8")
+        self.logger.info("Generated bridge.py")
+        
+        self.logger.success(f"Synced source code to app/src/main/python/")
+
+    def _sync_frontend_dist(self, project_dir: Path, bundle_dir: Path, config: Dict[str, Any]) -> None:
+        """
+        同步前端编译产物到 Chaquopy Python 包目录
+
+        源: frontend/dist/
+        目标: app/src/main/python/{app_module}/resources/static/
+        """
+        frontend_dist = project_dir / "frontend" / "dist"
+        app_module = config.get("tool", {}).get("pyapp", {}).get("app_module", "app")
+        
+        python_target = bundle_dir / "app" / "src" / "main" / "python"
+        target_static = python_target / app_module / "resources" / "static"
+
+        if not frontend_dist.exists():
+            self.logger.warning("frontend/dist/ not found, skipping frontend sync")
+            return
+
+        # 确保 resources 目录存在
+        resources_dir = python_target / app_module / "resources"
+        resources_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 确保 resources/__init__.py 存在
+        resources_init = resources_dir / "__init__.py"
+        if not resources_init.exists():
+            resources_init.write_text('"""Resources package"""', encoding="utf-8")
+
+        # 同步前端资源
+        if target_static.exists():
+            shutil.rmtree(target_static)
+        shutil.copytree(frontend_dist, target_static)
+
+        self.logger.success(f"Synced frontend/dist/ → app/src/main/python/{app_module}/resources/static/")
+
+    def _generate_main_activity(self, package_name: str, port: int = 18080) -> str:
+        """生成 MainActivity Kotlin 代码"""
+        return f'''package {package_name}
+
+import android.content.Intent
+import android.os.Bundle
+import android.util.Log
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.ProgressBar
+import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
+
+class MainActivity : AppCompatActivity() {{
+
+    companion object {{
+        private const val TAG = "MainActivity"
+        private const val PYTHON_PORT = {port}
+        private const val STATUS_URL = "http://127.0.0.1:$PYTHON_PORT/api/status"
+        private const val MAX_RETRY_COUNT = 30
+        private const val RETRY_INTERVAL_MS = 500L
     }}
 
-    @Override
-    protected void onDestroy() {{
-        if (webView != null) {{
-            webView.destroy();
+    private var webView: WebView? = null
+    private lateinit var rootLayout: FrameLayout
+    private lateinit var loadingPanel: View
+    private lateinit var progressBar: ProgressBar
+    private lateinit var tvStatus: TextView
+
+    override fun onCreate(savedInstanceState: Bundle?) {{
+        super.onCreate(savedInstanceState)
+
+        // 创建根布局
+        rootLayout = FrameLayout(this).apply {{
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }}
-        super.onDestroy();
+        setContentView(rootLayout)
+
+        // 创建加载状态视图
+        loadingPanel = createLoadingView()
+        rootLayout.addView(loadingPanel)
+
+        // 启动 Python 服务
+        startPythonService()
+
+        // 等待服务就绪
+        waitForPythonReady()
+    }}
+
+    private fun createLoadingView(): View {{
+        return FrameLayout(this).apply {{
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.CENTER
+            )
+
+            addView(ProgressBar(context).apply {{
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+                progressBar = this
+            }})
+
+            addView(TextView(context).apply {{
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                ).apply {{
+                    topMargin = 80
+                }}
+                text = "正在启动..."
+                textSize = 14f
+                setTextColor(android.graphics.Color.parseColor("#666666"))
+                tvStatus = this
+            }})
+        }}
+    }}
+
+    private fun createWebView(): WebView {{
+        return WebView(this).apply {{
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+
+            settings.apply {{
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                setSupportZoom(true)
+                builtInZoomControls = true
+                displayZoomControls = false
+                // Disable cache to always load fresh content from Python server
+                cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
+                mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            }}
+
+            webViewClient = object : WebViewClient() {{
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): Boolean {{
+                    val url = request?.url.toString()
+                    return when {{
+                        url.startsWith("http://127.0.0.1:$PYTHON_PORT") -> false
+                        url.startsWith("http://localhost:$PYTHON_PORT") -> false
+                        url == "about:blank" -> false
+                        else -> true
+                    }}
+                }}
+
+                override fun onPageFinished(view: WebView?, url: String?) {{
+                    super.onPageFinished(view, url)
+                    Log.i(TAG, "Page finished loading: $url")
+                }}
+
+                override fun onReceivedError(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                    error: android.webkit.WebResourceError?
+                ) {{
+                    super.onReceivedError(view, request, error)
+                    Log.e(TAG, "WebView error: ${{error?.description}}")
+                }}
+            }}
+
+            WebView.setWebContentsDebuggingEnabled(true)
+        }}
+    }}
+
+    private fun startPythonService() {{
+        tvStatus.text = "正在启动 Python 服务..."
+        val intent = Intent(this, PythonService::class.java)
+        startForegroundService(intent)
+        Log.i(TAG, "PythonService started")
+    }}
+
+    private fun waitForPythonReady() {{
+        lifecycleScope.launch {{
+            var retryCount = 0
+
+            while (isActive && retryCount < MAX_RETRY_COUNT) {{
+                retryCount++
+                tvStatus.text = "等待 Python 服务就绪... ($retryCount/$MAX_RETRY_COUNT)"
+
+                try {{
+                    if (checkPythonStatus()) {{
+                        Log.i(TAG, "Python service is ready")
+                        loadWebView()
+                        return@launch
+                    }}
+                }} catch (e: Exception) {{
+                    Log.d(TAG, "Python not ready yet: ${{e.message}}")
+                }}
+
+                delay(RETRY_INTERVAL_MS)
+            }}
+
+            tvStatus.text = "Python 服务启动超时"
+        }}
+    }}
+
+    private suspend fun checkPythonStatus(): Boolean {{
+        return withContext(Dispatchers.IO) {{
+            try {{
+                val url = URL(STATUS_URL)
+                val connection = url.openConnection() as HttpURLConnection
+                connection.apply {{
+                    requestMethod = "GET"
+                    connectTimeout = 2000
+                    readTimeout = 2000
+                }}
+                val responseCode = connection.responseCode
+                connection.disconnect()
+                responseCode == 200
+            }} catch (e: Exception) {{
+                false
+            }}
+        }}
+    }}
+
+    private fun loadWebView() {{
+        runOnUiThread {{
+            tvStatus.text = "加载应用界面..."
+
+            webView = createWebView()
+            rootLayout.addView(webView)
+
+            loadingPanel.visibility = View.GONE
+
+            webView?.loadUrl("http://127.0.0.1:$PYTHON_PORT")
+        }}
+    }}
+
+    override fun onBackPressed() {{
+        if (webView?.canGoBack() == true) {{
+            webView?.goBack()
+        }} else {{
+            moveTaskToBack(true)
+        }}
+    }}
+
+    override fun onDestroy() {{
+        webView?.apply {{
+            stopLoading()
+            settings.javaScriptEnabled = false
+            clearCache(true)
+            clearHistory()
+            removeAllViews()
+            destroy()
+        }}
+        webView = null
+        super.onDestroy()
     }}
 }}
 '''
 
-    def _create_gradle_wrapper(self, bundle_dir: Path):
-        """创建 Gradle Wrapper 文件"""
-        gradlew_content = '''#!/bin/sh
-# Gradle wrapper stub - replace with actual gradle wrapper
-echo "Please run: gradle wrapper"
-gradle wrapper
+    def _generate_python_service(self, package_name: str, port: int = 18080) -> str:
+        """生成 PythonService Kotlin 代码"""
+        return f'''package {package_name}
+
+import android.app.*
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.util.Log
+import android.widget.Toast
+import androidx.core.app.NotificationCompat
+import com.chaquo.python.Python
+import com.chaquo.python.android.AndroidPlatform
+import kotlinx.coroutines.*
+import java.io.File
+
+class PythonService : Service() {{
+
+    companion object {{
+        private const val TAG = "PythonService"
+        private const val NOTIFICATION_ID = 1001
+        private const val CHANNEL_ID = "python_service_channel"
+        private const val PYTHON_PORT = {port}
+    }}
+
+    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private var pythonJob: Job? = null
+
+    override fun onCreate() {{
+        super.onCreate()
+        createNotificationChannel()
+        Log.i(TAG, "PythonService created")
+    }}
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {{
+        startForeground(NOTIFICATION_ID, createNotification())
+        startPythonServer()
+        return START_STICKY
+    }}
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun createNotificationChannel() {{
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {{
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Python 服务",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {{
+                description = "Python 服务运行中"
+            }}
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }}
+    }}
+
+    private fun createNotification(): Notification {{
+        val intent = Intent(this, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Python 服务")
+            .setContentText("服务运行中 · 端口 $PYTHON_PORT")
+            .setSmallIcon(android.R.drawable.ic_menu_info_details)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .build()
+    }}
+
+    private fun startPythonServer() {{
+        pythonJob?.cancel()
+
+        pythonJob = serviceScope.launch {{
+            try {{
+                if (!Python.isStarted()) {{
+                    Python.start(AndroidPlatform(this@PythonService))
+                    Log.i(TAG, "Python runtime initialized")
+                }}
+
+                val python = Python.getInstance()
+
+                val appDir = File(filesDir, "app").apply {{ mkdirs() }}
+                val dataDir = File(filesDir, "data").apply {{ mkdirs() }}
+
+                val bridge = python.getModule("bridge")
+                val result = bridge.callAttr(
+                    "start_server",
+                    PYTHON_PORT,
+                    appDir.absolutePath,
+                    dataDir.absolutePath
+                )
+
+                Log.i(TAG, "Python server started: $result")
+
+            }} catch (e: Exception) {{
+                Log.e(TAG, "Failed to start Python server", e)
+                // 通知用户服务启动失败
+                Handler(Looper.getMainLooper()).post {{
+                    Toast.makeText(
+                        this@PythonService,
+                        "Python 服务启动失败: ${{e.message}}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }}
+            }}
+        }}
+    }}
+
+    private fun stopPythonServer() {{
+        try {{
+            if (Python.isStarted()) {{
+                val python = Python.getInstance()
+                val bridge = python.getModule("bridge")
+                bridge.callAttr("stop_server")
+                Log.i(TAG, "Python server stopped")
+            }}
+        }} catch (e: Exception) {{
+            Log.e(TAG, "Failed to stop Python server", e)
+        }}
+    }}
+
+    override fun onDestroy() {{
+        stopPythonServer()
+        pythonJob?.cancel()
+        serviceScope.cancel()
+        Log.i(TAG, "PythonService destroyed")
+        super.onDestroy()
+    }}
+}}
 '''
-        gradlew_bat_content = '''@echo off
-REM Gradle wrapper stub - replace with actual gradle wrapper
-echo Please run: gradle wrapper
-gradle wrapper
-'''
 
-        gradlew = bundle_dir / "gradlew"
-        gradlew_bat = bundle_dir / "gradlew.bat"
+    def _generate_bridge_py(self, app_module: str) -> str:
+        """Generate bridge.py Python bridge module"""
+        return f'''"""
+Python Bridge for Android
 
-        if not gradlew.exists():
-            gradlew.write_text(gradlew_content, encoding="utf-8")
-        if not gradlew_bat.exists():
-            gradlew_bat.write_text(gradlew_bat_content, encoding="utf-8")
+Provides interface for Android layer to call Python service
+"""
 
-        # 如果系统有 gradle，生成真正的 wrapper
+import threading
+import logging
+from typing import Optional
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(name)s: %(message)s'
+)
+logger = logging.getLogger("bridge")
+
+_server = None
+_server_thread: Optional[threading.Thread] = None
+_actual_port: Optional[int] = None
+_lock = threading.Lock()
+
+
+def start_server(port: int, app_dir: str, data_dir: str) -> str:
+    """
+    Start FastAPI service in background thread
+
+    Args:
+        port: Service port
+        app_dir: Application directory
+        data_dir: Data directory
+
+    Returns:
+        Startup result message
+    """
+    global _server, _server_thread, _actual_port
+
+    with _lock:
+        if _server_thread and _server_thread.is_alive():
+            return "Server already running"
+
+        _actual_port = port
+
+    def run_server():
+        global _server
         try:
-            subprocess.run(
-                ["gradle", "wrapper"],
-                cwd=str(bundle_dir),
-                capture_output=True,
-                check=True,
+            import uvicorn
+            import os
+            
+            # Set environment variables
+            os.environ["APP_DIR"] = app_dir
+            os.environ["APP_DATA_DIR"] = data_dir
+            os.environ["APP_PORT"] = str(port)
+
+            # Import app - support two methods
+            try:
+                # Method 1: Use create_app factory function
+                from {app_module} import create_app
+                app = create_app()
+            except ImportError:
+                # Method 2: Use global app instance
+                from {app_module}.app import app
+
+            config = uvicorn.Config(
+                app,
+                host="127.0.0.1",
+                port=port,
+                log_level="info",
+                access_log=False,
             )
-        except (subprocess.CalledProcessError, FileNotFoundError):
+            _server = uvicorn.Server(config)
+
+            logger.info(f"Starting server on port {{port}}")
+            _server.run()
+
+        except Exception as e:
+            logger.error(f"Server error: {{e}}")
+            import traceback
+            traceback.print_exc()
+
+    _server_thread = threading.Thread(target=run_server, daemon=True)
+    _server_thread.start()
+
+    return f"Server starting on port {{port}}"
+
+
+def stop_server() -> str:
+    """
+    Stop FastAPI service
+
+    Returns:
+        Stop result message
+    """
+    global _server
+
+    with _lock:
+        if _server:
+            _server.should_exit = True
+            logger.info("Server stop requested")
+            return "Server stopping"
+
+        return "Server not running"
+
+
+def get_status() -> dict:
+    """
+    Get service status
+
+    Returns:
+        Status info dict
+    """
+    import sys
+
+    with _lock:
+        return {{
+            "status": "running" if _server_thread and _server_thread.is_alive() else "stopped",
+            "python_version": sys.version,
+            "port": _actual_port if _server_thread and _server_thread.is_alive() else None,
+        }}
+'''
+
+    def _create_gradle_wrapper(self, bundle_dir: Path):
+        """创建 Gradle Wrapper 文件（从模板目录复制）"""
+        template_dir = Path(__file__).parent.parent / "templates" / "shells" / "android"
+
+        # 复制 gradlew (Unix)
+        src_gradlew = template_dir / "gradlew"
+        dst_gradlew = bundle_dir / "gradlew"
+        if src_gradlew.exists():
+            shutil.copy2(src_gradlew, dst_gradlew)
+            # 设置可执行权限
+            if os.name != "nt":
+                os.chmod(dst_gradlew, 0o755)
+        else:
+            self.logger.warning("gradlew template not found, creating stub...")
+            dst_gradlew.write_text("#!/bin/sh\nexec gradle \"$@\"\n", encoding="utf-8")
+            if os.name != "nt":
+                os.chmod(dst_gradlew, 0o755)
+
+        # 复制 gradlew.bat (Windows)
+        src_gradlew_bat = template_dir / "gradlew.bat"
+        dst_gradlew_bat = bundle_dir / "gradlew.bat"
+        if src_gradlew_bat.exists():
+            shutil.copy2(src_gradlew_bat, dst_gradlew_bat)
+        else:
+            self.logger.warning("gradlew.bat template not found, creating stub...")
+            dst_gradlew_bat.write_text("@echo off\ncall gradle %*\n", encoding="utf-8")
+
+        # 复制 gradle/wrapper 目录
+        src_wrapper_dir = template_dir / "gradle" / "wrapper"
+        dst_wrapper_dir = bundle_dir / "gradle" / "wrapper"
+        dst_wrapper_dir.mkdir(parents=True, exist_ok=True)
+
+        # 复制 gradle-wrapper.jar
+        src_jar = src_wrapper_dir / "gradle-wrapper.jar"
+        dst_jar = dst_wrapper_dir / "gradle-wrapper.jar"
+        if src_jar.exists():
+            shutil.copy2(src_jar, dst_jar)
+        else:
             self.logger.warning(
-                "Gradle not found. Please install Gradle or run 'gradle wrapper' in the bundle directory."
+                "gradle-wrapper.jar not found in template. "
+                "Gradle wrapper may not work correctly."
+            )
+
+        # 复制 gradle-wrapper.properties
+        src_props = src_wrapper_dir / "gradle-wrapper.properties"
+        dst_props = dst_wrapper_dir / "gradle-wrapper.properties"
+        if src_props.exists():
+            shutil.copy2(src_props, dst_props)
+        else:
+            # 创建默认配置
+            dst_props.write_text(
+                "distributionBase=GRADLE_USER_HOME\n"
+                "distributionPath=wrapper/dists\n"
+                "distributionUrl=https://services.gradle.org/distributions/gradle-8.5-bin.zip\n"
+                "networkTimeout=10000\n"
+                "validateDistributionUrl=true\n"
+                "zipStoreBase=GRADLE_USER_HOME\n"
+                "zipStorePath=wrapper/dists\n",
+                encoding="utf-8"
             )

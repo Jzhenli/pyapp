@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("com.chaquo.python")
+    id("org.jetbrains.kotlin.android") version "1.9.0"
 }
 
 android {
@@ -13,6 +14,12 @@ android {
         targetSdk = {{ target_sdk }}
         versionCode = 1
         versionName = "{{ version }}"
+
+        // Chaquopy requires ndk.abiFilters
+        // arm64-v8a: 现代设备 | armeabi-v7a: 旧设备 | x86_64: 模拟器
+        ndk {
+            abiFilters += listOf({% for abi in abi_filters %}"{{ abi }}"{% if not loop.last %}, {% endif %}{% endfor %})
+        }
     }
 
     buildTypes {
@@ -25,12 +32,31 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
 }
 
 chaquopy {
     defaultConfig {
         version = "{{ python_major_minor }}"
+        // Extract resources package to filesystem for static file access
+        extractPackages("{{ app_module }}.resources")
         pip {
+{% if pip_index_url %}
+            // 配置 pip 索引优先级
+            options("--index-url", "{{ pip_index_url }}")
+{% endif %}
+{% for extra_url in pip_extra_index_urls %}
+            options("--extra-index-url", "{{ extra_url }}")
+{% endfor %}
+{% if pip_timeout %}
+            options("--timeout", "{{ pip_timeout }}")
+{% endif %}
+{% if pip_proxy %}
+            options("--proxy", "{{ pip_proxy }}")
+{% endif %}
             // Dependencies will be installed by pyapp
         }
     }
@@ -39,5 +65,8 @@ chaquopy {
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.webkit:webkit:1.9.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }

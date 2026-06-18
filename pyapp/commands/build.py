@@ -21,7 +21,9 @@ def build_platform(platform: str, build_type: str = "debug", project_dir: Path =
         build_type: 构建类型 (debug/release)
         project_dir: 项目目录，默认为当前目录
         no_create: 不自动创建平台项目结构
-        arch: 目标架构 (x86_64, aarch64, armv7l)，仅 Linux 平台有效
+        arch: 目标架构
+            - Linux: x86_64, aarch64, armv7l
+            - Android: arm64-v8a, armeabi-v7a, x86_64 (多个用逗号分隔)
     """
     logger = get_logger()
 
@@ -42,13 +44,29 @@ def build_platform(platform: str, build_type: str = "debug", project_dir: Path =
     # 验证配置
     validate_before_build(project_dir, platform)
 
-    # 验证架构参数
-    valid_archs = ["x86_64", "aarch64", "armv7l"]
-    if arch and arch not in valid_archs:
-        raise click.ClickException(f"Invalid architecture: {arch}. Valid options: {', '.join(valid_archs)}")
-
-    if arch and platform not in ("linux", "all"):
-        logger.warning(f"--arch option is only effective for Linux platform, ignoring for {platform}")
+    # 解析架构参数
+    android_archs = None
+    linux_arch = None
+    
+    if arch:
+        if platform == "android" or platform == "all":
+            # Android 架构：逗号分隔
+            android_archs = [a.strip() for a in arch.split(",")]
+            valid_android_archs = ["arm64-v8a", "armeabi-v7a", "x86_64"]
+            for a in android_archs:
+                if a not in valid_android_archs:
+                    raise click.ClickException(
+                        f"Invalid Android architecture: {a}. Valid options: {', '.join(valid_android_archs)}"
+                    )
+        
+        if platform == "linux" or platform == "all":
+            # Linux 架构：单个值
+            linux_arch = arch.split(",")[0].strip() if "," in arch else arch
+            valid_linux_archs = ["x86_64", "aarch64", "armv7l"]
+            if linux_arch not in valid_linux_archs:
+                raise click.ClickException(
+                    f"Invalid Linux architecture: {linux_arch}. Valid options: {', '.join(valid_linux_archs)}"
+                )
 
     # 确定要构建的平台
     if platform == "all":
@@ -58,7 +76,13 @@ def build_platform(platform: str, build_type: str = "debug", project_dir: Path =
 
     results = []
     for plat in platforms:
-        logger.info(f"Building {plat}{'/' + arch if arch and plat == 'linux' else ''}...")
+        arch_info = ""
+        if plat == "android" and android_archs:
+            arch_info = "/" + ",".join(android_archs)
+        elif plat == "linux" and linux_arch:
+            arch_info = "/" + linux_arch
+        
+        logger.info(f"Building {plat}{arch_info}...")
         try:
             platform_instance = get_platform(plat)
 
@@ -67,11 +91,16 @@ def build_platform(platform: str, build_type: str = "debug", project_dir: Path =
                 bundle_dir = project_dir / "bundles" / plat
                 if not bundle_dir.exists():
                     logger.info(f"Creating {plat} project structure...")
-                    platform_instance.create(project_dir, config_dict)
+                    if plat == "android" and android_archs:
+                        platform_instance.create(project_dir, config_dict, arch=android_archs)
+                    else:
+                        platform_instance.create(project_dir, config_dict)
 
-            # 传递架构参数（仅 Linux 平台）
-            if plat == "linux" and arch:
-                result = platform_instance.build(project_dir, config_dict, build_type, arch=arch)
+            # 传递架构参数
+            if plat == "linux" and linux_arch:
+                result = platform_instance.build(project_dir, config_dict, build_type, arch=linux_arch)
+            elif plat == "android" and android_archs:
+                result = platform_instance.build(project_dir, config_dict, build_type, arch=android_archs)
             else:
                 result = platform_instance.build(project_dir, config_dict, build_type)
             results.append((plat, result))

@@ -26,17 +26,17 @@ pyapp run windows
 
 ## 命令列表
 
-| 命令 | 说明 |
-|------|------|
-| `pyapp init <name>` | 创建新项目 |
-| `pyapp create <platform>` | 创建平台项目结构 |
-| `pyapp build <platform>` | 构建应用 |
-| `pyapp run <platform>` | 运行应用 |
-| `pyapp dev <platform>` | 开发模式（热重载） |
-| `pyapp package <platform>` | 打包发布版 |
-| `pyapp deploy <platform>` | 部署到设备 |
-| `pyapp setup <platform>` | 安装平台依赖 |
-| `pyapp logs` | 查看日志 |
+| 命令                         | 说明        |
+| -------------------------- | --------- |
+| `pyapp init <name>`        | 创建新项目     |
+| `pyapp create <platform>`  | 创建平台项目结构  |
+| `pyapp build <platform>`   | 构建应用      |
+| `pyapp run <platform>`     | 运行应用      |
+| `pyapp dev <platform>`     | 开发模式（热重载） |
+| `pyapp package <platform>` | 打包发布版     |
+| `pyapp deploy <platform>`  | 部署到设备     |
+| `pyapp setup <platform>`   | 安装平台依赖    |
+| `pyapp logs`               | 查看日志      |
 
 ### 命令详解
 
@@ -71,6 +71,11 @@ pyapp build android
 
 # 指定项目目录
 pyapp build windows -d /path/to/project
+
+# Android 平台指定 CPU 架构（支持多架构）
+pyapp build android --arch arm64-v8a
+pyapp build android --arch arm64-v8a --arch armeabi-v7a
+pyapp build android --arch x86_64  # 模拟器
 ```
 
 #### pyapp dev
@@ -98,6 +103,7 @@ pyapp run windows
 - 输出 ZIP 包
 
 **环境要求**：
+
 - MinGW-w64（可选，用于编译 exe）
 
 ```bash
@@ -115,40 +121,157 @@ pyapp setup windows
 
 - 使用 Chaquopy 打包 Python
 - 需要 JDK 和 Android SDK
+- 支持多种 CPU 架构
+
+**支持的 CPU 架构（ABI）**：
+
+- `arm64-v8a`：现代 64 位 ARM 设备（推荐）
+- `armeabi-v7a`：旧款 32 位 ARM 设备
+- `x86_64`：Android 模拟器
 
 ```bash
 # 安装 Android 开发环境
 pyapp setup android
+
+# 构建指定架构
+pyapp build android --arch arm64-v8a
+
+# 构建多架构 APK（增大包体积但兼容性更好）
+pyapp build android --arch arm64-v8a --arch armeabi-v7a
 ```
 
 ## 配置说明
 
 项目配置文件：`pyproject.toml`
 
+### 基本配置
+
 ```toml
 [project]
 name = "my-app"
 version = "0.1.0"
+description = "My Python Application"
+authors = [{name = "Your Name", email = "your.email@example.com"}]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+]
+```
+
+### PyApp 配置
+
+```toml
+[tool.pyapp]
+# 通用配置
+app_module = "my_app"        # Python 模块名（必需）
+port = 18080                 # 应用端口（默认：18080）
+python_version = "3.10.11"   # Python 版本（默认：3.12.1）
+```
+
+### Windows 平台配置
+
+```toml
+[tool.pyapp.windows]
+# Windows 特定配置（可选）
+# 目前支持基本的构建配置
+```
+
+### Linux 平台配置
+
+```toml
+[tool.pyapp.linux]
+service_name = "my-app"      # systemd 服务名
+service_description = "My Python Application Service"  # 服务描述
+```
+
+### Android 平台配置
+
+```toml
+[tool.pyapp.android]
+# 基本配置
+package_name = "com.example.myapp"  # Android 包名（必需）
+min_sdk = 21                        # 最低 SDK 版本（默认：24）
+target_sdk = 34                     # 目标 SDK 版本（默认：34）
+
+# CPU 架构配置
+abi_filters = ["arm64-v8a"]         # CPU 架构列表
+# 支持的架构：
+# - arm64-v8a: 现代 64 位 ARM 设备（推荐）
+# - armeabi-v7a: 旧款 32 位 ARM 设备
+# - x86_64: Android 模拟器
+
+# 权限配置
+permissions = ["INTERNET"]          # Android 权限列表
+# 常用权限：
+# - INTERNET: 网络访问
+# - CAMERA: 相机
+# - READ_EXTERNAL_STORAGE: 读取外部存储
+# - WRITE_EXTERNAL_STORAGE: 写入外部存储
+
+# 平台特定依赖（可选，会覆盖全局 dependencies）
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+]
+
+# pip 配置（可选）
+pip_index_url = ""                  # pip 主索引 URL
+pip_extra_index_urls = [            # 额外索引 URL
+    "https://chaquo.com/pypi-13.1", # Chaquopy 官方仓库
+    "https://pypi.org/simple",      # PyPI 官方仓库
+]
+pip_timeout = 120                    # pip 超时时间（秒，默认：120）
+pip_proxy = ""                      # pip 代理地址
+```
+
+### 完整配置示例
+
+```toml
+[project]
+name = "my-app"
+version = "0.1.0"
+description = "My Python Application"
+authors = [{name = "Your Name", email = "your.email@example.com"}]
+readme = "README.md"
+requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.30.0",
 ]
 
 [tool.pyapp]
-app_module = "my_app"        # Python 模块名
-port = 18080                 # 应用端口
-python_version = "3.10.11"   # Python 版本
+app_module = "my_app"
+port = 18080
+python_version = "3.10.11"
 
 [tool.pyapp.windows]
 # Windows 特定配置
 
 [tool.pyapp.linux]
-service_name = "my-app"      # systemd 服务名
+service_name = "my-app"
+service_description = "My Python Application Service"
 
 [tool.pyapp.android]
-package_name = "com.example.myapp"  # Android 包名
-min_sdk = 21                        # 最低 SDK 版本
-target_sdk = 34                     # 目标 SDK 版本
+package_name = "com.example.myapp"
+min_sdk = 24
+target_sdk = 34
+abi_filters = ["arm64-v8a"]
+permissions = ["INTERNET", "CAMERA"]
+
+# 使用国内镜像加速依赖安装
+pip_extra_index_urls = [
+    "https://chaquo.com/pypi-13.1",
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+]
+pip_timeout = 180
 ```
 
 ## 项目结构
@@ -232,6 +355,7 @@ python verify.py
 ### Q: Windows 构建后运行闪退？
 
 检查以下几点：
+
 1. 确认 `pyproject.toml` 中 `app_module` 配置正确
 2. 使用 `pyapp -v build windows` 查看详细日志
 3. 手动运行 `runtime\python.exe -m <app_module>` 测试
