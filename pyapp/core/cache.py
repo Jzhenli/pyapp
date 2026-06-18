@@ -51,15 +51,22 @@ class CacheManager:
         return cached_path if cached_path.exists() else None
 
     def put(self, key: str, source_path: Path) -> Path:
-        """添加缓存项"""
+        """添加缓存项（移动文件到 runtimes 目录，去掉 .tmp 后缀）"""
         target_dir = self.runtimes_dir if key.startswith("runtime-") else self.packages_dir
-        target_path = target_dir / source_path.name
+
+        # 如果是 .tmp 文件，去掉后缀
+        filename = source_path.name
+        if filename.endswith(".tmp"):
+            filename = filename[:-4]
+
+        target_path = target_dir / filename
 
         if target_path.exists():
             if target_path.is_dir():
                 shutil.rmtree(target_path)
             else:
                 target_path.unlink()
+
         shutil.move(str(source_path), str(target_path))
 
         self.metadata["entries"][key] = {
@@ -70,6 +77,16 @@ class CacheManager:
         self._save_metadata()
 
         return target_path
+
+    def register(self, key: str, file_path: Path) -> Path:
+        """注册已有文件为缓存项（不移动文件，只更新 metadata.json）"""
+        self.metadata["entries"][key] = {
+            "path": str(file_path),
+            "timestamp": datetime.now().isoformat(),
+            "size": file_path.stat().st_size,
+        }
+        self._save_metadata()
+        return file_path
 
     def delete(self, key: str) -> bool:
         """删除缓存项"""

@@ -33,7 +33,7 @@ class ProjectConfig:
 @dataclass
 class PyAppConfig:
     """PyApp 工具配置"""
-    python_version: str = "3.12.1"
+    python_version: str = "3.10"
     app_module: str = ""
     port: int = 18080
 
@@ -76,7 +76,7 @@ class AppConfig:
             app_module = cls._detect_app_module(path.parent, project.name)
 
         pyapp = PyAppConfig(
-            python_version=pyapp_data.get("python_version", "3.12.1"),
+            python_version=pyapp_data.get("python_version", "3.10"),
             app_module=app_module,
             port=pyapp_data.get("port", 18080),
             android=pyapp_data.get("android", {}),
@@ -122,12 +122,12 @@ class AppConfig:
 
         python_version = self.pyapp.python_version
 
-        # 验证版本格式
-        pattern = r"^\d+\.\d+\.\d+$"
+        # 验证版本格式（支持 X.Y 或 X.Y.Z）
+        pattern = r"^\d+\.\d+(\.\d+)?$"
         if not re.match(pattern, python_version):
             raise ValueError(
                 f"Invalid Python version format: {python_version}. "
-                "Expected format: X.Y.Z (e.g., 3.12.1)"
+                "Expected format: X.Y (e.g., 3.10) or X.Y.Z (e.g., 3.10.11)"
             )
 
         # 验证版本范围
@@ -135,12 +135,15 @@ class AppConfig:
             from packaging.version import parse as parse_version
             min_version = parse_version("3.8.0")
             max_version = parse_version("3.13.0")
-            current_version = parse_version(python_version)
+
+            # 提取主版本号用于验证
+            major_minor = ".".join(python_version.split(".")[:2])
+            current_version = parse_version(major_minor + ".0")
 
             if current_version < min_version:
                 raise ValueError(
                     f"Python version {python_version} is too old. "
-                    f"Minimum supported version is 3.8.0"
+                    f"Minimum supported version is 3.8"
                 )
 
             if current_version >= max_version:
@@ -149,7 +152,6 @@ class AppConfig:
             # 验证 Chaquopy 支持的版本（Android 平台）
             if self.pyapp.android:
                 chaquopy_versions = ["3.8", "3.9", "3.10", "3.11", "3.12"]
-                major_minor = f"{current_version.major}.{current_version.minor}"
                 if major_minor not in chaquopy_versions:
                     raise ValueError(
                         f"Python {major_minor} is not supported by Chaquopy for Android. "

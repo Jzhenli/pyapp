@@ -52,25 +52,31 @@ RUNTIME_SOURCES: Dict[str, RuntimeSource] = {
     ),
 }
 
-# 已知的 PBS 版本映射 (Python 版本 -> PBS Release Tag)
-# 格式: "Python版本": "PBS Release Tag"
-PBS_VERSIONS = {
-    # Python 3.10
-    "3.10.20": "20260610",
-    "3.10.14": "20240713",
-    "3.10.13": "20240107",
-    "3.10.11": "20240107",  # 兼容旧配置
-    # Python 3.11
-    "3.11.9": "20240713",
-    "3.11.7": "20240107",
-    # Python 3.12
-    "3.12.4": "20240713",
-    "3.12.1": "20240107",
+# 各平台 Python 运行时版本映射
+# 格式: 基础版本 -> {平台: (具体版本, 额外信息)}
+# Windows: 完整版本号，用于下载 python.org 的 embeddable 包
+# Linux: (版本号, PBS build tag)，用于下载 Python Build Standalone
+# Android: 只需主版本号，由 Chaquopy 管理
+PYTHON_VERSIONS = {
+    "3.10": {
+        "windows": "3.10.11",
+        "linux": ("3.10.20", "20260610"),
+        "android": "3.10",
+    },
+    "3.11": {
+        "windows": "3.11.9",
+        "linux": ("3.11.15", "20260610"),
+        "android": "3.11",
+    },
+    "3.12": {
+        "windows": "3.12.10",
+        "linux": ("3.12.13", "20260610"),
+        "android": "3.12",
+    },
 }
 
 # 默认 Python 版本（当配置的版本不存在时使用）
-PBS_DEFAULT_VERSION = "3.10.20"
-PBS_DEFAULT_BUILD = "20260610"
+DEFAULT_PYTHON_VERSION = "3.10"
 
 
 class RuntimeManager:
@@ -79,6 +85,47 @@ class RuntimeManager:
     def __init__(self, cache_dir: Optional[Path] = None):
         self.cache = CacheManager(cache_dir)
         self.logger = get_logger()
+
+    @staticmethod
+    def get_platform_version(base_version: str, platform: str) -> tuple:
+        """
+        根据基础版本和平台获取具体的版本信息
+
+        Args:
+            base_version: 基础版本号，如 "3.10" 或 "3.10.11"
+            platform: 平台名称 (windows, linux, android)
+
+        Returns:
+            tuple: (version, extra_info)
+                - windows: ("3.10.11", None)
+                - linux: ("3.10.20", "20260610")
+                - android: ("3.10", None)
+        """
+        # 提取主版本号 (如 "3.10.11" -> "3.10")
+        major_minor = ".".join(base_version.split(".")[:2])
+
+        # 查找映射表
+        if major_minor in PYTHON_VERSIONS:
+            platform_info = PYTHON_VERSIONS[major_minor].get(platform)
+            if platform_info:
+                if isinstance(platform_info, tuple):
+                    return platform_info  # (version, build_tag)
+                return (platform_info, None)  # (version, None)
+
+        # 未找到映射，返回原始版本
+        return (base_version, None)
+
+    def _get_default_linux_version(self) -> tuple:
+        """
+        获取默认的 Linux 版本信息
+
+        Returns:
+            tuple: (version, build) 或 None
+        """
+        default_info = PYTHON_VERSIONS.get(DEFAULT_PYTHON_VERSION, {}).get("linux")
+        if isinstance(default_info, tuple):
+            return default_info
+        return None
 
     def get_runtime(self, platform: str, version: str, target_dir: Path, arch: str = None) -> Path:
         """
@@ -96,26 +143,51 @@ class RuntimeManager:
         else:
             runtime_key = platform
 
-        # 解析 PBS 版本
+        # 解析版本信息
         actual_version = version
         build = None
         if platform == "linux":
-            if version in PBS_VERSIONS:
-                build = PBS_VERSIONS[version]
+            # 从 PYTHON_VERSIONS 获取版本和 build tag
+            major_minor = ".".join(version.split(".")[:2])
+            if major_minor in PYTHON_VERSIONS:
+                linux_info = PYTHON_VERSIONS[major_minor].get("linux")
+                if isinstance(linux_info, tuple):
+                    actual_version, build = linux_info
+                else:
+                    # 未找到 Linux 配置，使用默认版本
+                    self.logger.warning(
+                        f"Python {major_minor} Linux runtime not found, "
+                        f"using default version {DEFAULT_PYTHON_VERSION}"
+                    )
+                    default_info = self._get_default_linux_version()
+                    if default_info:
+                        actual_version, build = default_info
             else:
-                # 版本不存在，使用默认版本
+                # 版本不在映射表中，使用默认版本
                 self.logger.warning(
-                    f"Python {version} not found in PBS releases, "
-                    f"using default version {PBS_DEFAULT_VERSION}"
+                    f"Python {version} not in version mapping, "
+                    f"using default version {DEFAULT_PYTHON_VERSION}"
                 )
-                actual_version = PBS_DEFAULT_VERSION
-                build = PBS_DEFAULT_BUILD
+                default_info = self._get_default_linux_version()
+                if default_info:
+                    actual_version, build = default_info
 
         cache_key = f"runtime-{runtime_key}-{actual_version}"
         cached_path = self.cache.get(cache_key)
 
         if cached_path:
             self.logger.info(f"Using cached runtime: {cached_path}")
+            self.logger.info(f"Extracting to: {target_dir}")
+            return self._extract_runtime(cached_path, target_dir, runtime_key)
+
+        # 检查 runtimes 目录是否有手动放置的文件
+        expected_filename = self._get_runtime_filename(runtime_key, actual_version, build)
+        manual_file = self.cache.runtimes_dir / expected_filename
+        if manual_file.exists() and manual_file.stat().st_size > 1_000_000:
+            self.logger.info(f"Found manually placed runtime: {manual_file}")
+            self.logger.info(f"File size: {manual_file.stat().st_size / (1024*1024):.1f} MB")
+            # 注册缓存条目（不移动文件）
+            cached_path = self.cache.register(cache_key, manual_file)
             self.logger.info(f"Extracting to: {target_dir}")
             return self._extract_runtime(cached_path, target_dir, runtime_key)
 
@@ -139,6 +211,7 @@ class RuntimeManager:
         if not self._verify_runtime(runtime_key, downloaded_file):
             raise VerificationError(f"Runtime verification failed for {runtime_key}")
 
+        # 移动到 runtimes 目录，创建缓存条目
         cached_path = self.cache.put(cache_key, downloaded_file)
         return self._extract_runtime(cached_path, target_dir, runtime_key)
 
@@ -153,7 +226,9 @@ class RuntimeManager:
         else:
             url = source.url_template.format(version=version)
 
-        temp_file = self.cache.temp_dir / f"python-{runtime_key}-{version}.tmp"
+        # 使用原始文件名 + .tmp 后缀作为 temp 文件名
+        filename = self._get_runtime_filename(runtime_key, version, build)
+        temp_file = self.cache.temp_dir / f"{filename}.tmp"
 
         try:
             request = Request(url, headers={"User-Agent": "PyApp-CLI/1.0"})
@@ -188,6 +263,32 @@ class RuntimeManager:
 
         except URLError as e:
             raise DownloadError(f"Failed to download runtime: {e}")
+
+    def _get_runtime_filename(self, runtime_key: str, version: str, build: str = None) -> str:
+        """
+        获取运行时文件的预期文件名
+
+        Args:
+            runtime_key: 运行时标识 (windows, linux-x86_64, linux-aarch64, linux-armv7l)
+            version: Python 版本
+            build: PBS build tag（仅 Linux 需要）
+
+        Returns:
+            str: 预期的文件名
+        """
+        if runtime_key == "windows":
+            return f"python-{version}-embed-amd64.zip"
+        elif runtime_key.startswith("linux"):
+            # Linux 使用 PBS，文件名格式: cpython-{version}+{build}-{arch}-install_only_stripped.tar.gz
+            arch_map = {
+                "linux-x86_64": "x86_64-unknown-linux-gnu",
+                "linux-aarch64": "aarch64-unknown-linux-gnu",
+                "linux-armv7l": "armv7-unknown-linux-gnueabihf",
+            }
+            arch = arch_map.get(runtime_key, runtime_key.replace("linux-", ""))
+            return f"cpython-{version}+{build}-{arch}-install_only_stripped.tar.gz"
+        else:
+            return f"python-{runtime_key}-{version}.tar.gz"
 
     def _verify_runtime(self, runtime_key: str, file_path: Path) -> bool:
         """验证运行时文件完整性"""

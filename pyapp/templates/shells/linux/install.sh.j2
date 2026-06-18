@@ -6,6 +6,7 @@ set -e
 APP_NAME="{{ app_name }}"
 SERVICE_NAME="{{ service_name }}"
 INSTALL_DIR="{{ install_dir }}"
+PYTHON_VERSION="{{ python_version }}"
 
 echo "Installing ${APP_NAME}..."
 
@@ -15,7 +16,7 @@ cp -r . ${INSTALL_DIR}/
 
 # Set permissions
 chmod +x ${INSTALL_DIR}/run.sh
-chmod +x ${INSTALL_DIR}/runtime/bin/python3
+chmod +x ${INSTALL_DIR}/runtime/bin/python${PYTHON_VERSION}
 
 # Install systemd service
 if command -v systemctl &> /dev/null; then

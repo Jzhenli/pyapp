@@ -125,7 +125,7 @@ class BasePlatform(ABC):
         if platform == "android":
             self._install_android_dependencies(all_dependencies, target, platform_config)
         else:
-            self._install_native_dependencies(all_dependencies, target, platform, arch)
+            self._install_native_dependencies(all_dependencies, target, platform, arch, config)
 
         return target
 
@@ -235,7 +235,7 @@ class BasePlatform(ABC):
         else:
             self.logger.info(f"Successfully installed {len(dependencies)} dependencies")
 
-    def _install_native_dependencies(self, dependencies: list, target: Path, platform: str, arch: str = None) -> None:
+    def _install_native_dependencies(self, dependencies: list, target: Path, platform: str, arch: str = None, config: Dict[str, Any] = None) -> None:
         """
         安装 Windows/Linux 平台依赖
 
@@ -245,6 +245,8 @@ class BasePlatform(ABC):
             platform: 目标平台 (windows, linux)
             arch: 目标架构 (x86_64, aarch64, armv7l)，用于跨架构编译
         """
+        from ..core.cache import CacheManager
+
         current_platform = sys.platform
         is_cross_compile = (
             (platform == "windows" and current_platform != "win32") or
@@ -264,10 +266,15 @@ class BasePlatform(ABC):
             elif arch == "armv7l" and machine not in ("armv7l", "armv7"):
                 is_cross_arch = True
 
+        # 使用 pyapp 的 packages 目录作为 pip 缓存
+        cache_manager = CacheManager()
+        pip_cache_dir = cache_manager.packages_dir
+
         cmd = [
             sys.executable, "-m", "pip", "install"
         ] + dependencies + [
             "--target", str(target),
+            "--cache-dir", str(pip_cache_dir),
         ]
 
         if is_cross_compile or is_cross_arch:
@@ -292,6 +299,14 @@ class BasePlatform(ABC):
                 }.get(arch)
                 if pip_platform:
                     cmd.extend(["--platform", pip_platform])
+                    # 指定 Python 版本和 ABI
+                    python_version = self.get_python_version(config, platform)
+                    major_minor = ".".join(python_version.split(".")[:2])
+                    cmd.extend([
+                        "--python-version", major_minor,
+                        "--implementation", "cp",
+                        "--abi", f"cp{major_minor.replace('.', '')}",
+                    ])
 
             # 只使用预编译包
             cmd.extend([
@@ -301,6 +316,7 @@ class BasePlatform(ABC):
             self.logger.warning("Some packages with C extensions may not be available")
 
         self.logger.info(f"Installing {len(dependencies)} dependencies for {platform}{'/' + arch if arch else ''}...")
+        self.logger.info(f"Using pip cache: {pip_cache_dir}")
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
@@ -310,10 +326,33 @@ class BasePlatform(ABC):
             # 逐个安装
             failed = []
             for dep in dependencies:
-                dep_cmd = [sys.executable, "-m", "pip", "install", dep, "--target", str(target)]
+                dep_cmd = [
+                    sys.executable, "-m", "pip", "install", dep,
+                    "--target", str(target),
+                    "--cache-dir", str(pip_cache_dir),
+                ]
 
+                # 跨架构编译时使用 piwheels
                 if platform == "linux" and arch in ("aarch64", "armv7l"):
                     dep_cmd.extend(["--extra-index-url", "https://www.piwheels.org/simple"])
+
+                # 指定目标平台
+                if platform == "linux" and arch:
+                    pip_platform = {
+                        "x86_64": "manylinux2014_x86_64",
+                        "aarch64": "manylinux2014_aarch64",
+                        "armv7l": "linux_armv7l",
+                    }.get(arch)
+                    if pip_platform:
+                        dep_cmd.extend(["--platform", pip_platform])
+                        # 指定 Python 版本和 ABI
+                        python_version = self.get_python_version(config, platform)
+                        major_minor = ".".join(python_version.split(".")[:2])
+                        dep_cmd.extend([
+                            "--python-version", major_minor,
+                            "--implementation", "cp",
+                            "--abi", f"cp{major_minor.replace('.', '')}",
+                        ])
 
                 if is_cross_compile or is_cross_arch:
                     dep_cmd.extend(["--only-binary=:all:"])
@@ -397,9 +436,26 @@ class BasePlatform(ABC):
         version_dir = f"{app_name}-{version}"
         return sync_frontend_dist(project_dir, platform, app_module, version_dir)
 
-    def get_python_version(self, config: Dict[str, Any]) -> str:
-        """获取 Python 版本"""
-        return config.get("tool", {}).get("pyapp", {}).get("python_version", "3.12.1")
+    def get_python_version(self, config: Dict[str, Any], platform: str = None) -> str:
+        """
+        获取 Python 版本，支持平台级别覆盖
+
+        Args:
+            config: 配置字典
+            platform: 平台名称 (windows, linux, android)，可选
+
+        Returns:
+            str: 平台特定的 Python 版本号
+        """
+        from ..core.runtime import RuntimeManager
+
+        base_version = config.get("tool", {}).get("pyapp", {}).get("python_version", "3.10")
+
+        if platform:
+            version, _ = RuntimeManager.get_platform_version(base_version, platform)
+            return version
+
+        return base_version
 
     def get_app_version(self, config: Dict[str, Any]) -> str:
         """获取应用版本"""

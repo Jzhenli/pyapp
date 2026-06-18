@@ -88,7 +88,7 @@ class WindowsPlatform(BasePlatform):
             app_name = self.get_app_name(config)
             app_module = self.get_app_module(config)
             version = self.get_app_version(config)
-            python_version = self.get_python_version(config)
+            python_version = self.get_python_version(config, "windows")
             version_dir = f"{app_name}-{version}"
 
             # 清理旧版本目录

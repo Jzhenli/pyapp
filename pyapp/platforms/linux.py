@@ -63,6 +63,10 @@ class LinuxPlatform(BasePlatform):
         # Jinja2 渲染
         jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
 
+        # 获取 Python 版本（提取主版本号，如 3.10）
+        python_version = self.get_python_version(config, "linux")
+        python_major_minor = ".".join(python_version.split(".")[:2])
+
         template_vars = {
             "app_name": app_name,
             "app_module": app_module,
@@ -70,6 +74,7 @@ class LinuxPlatform(BasePlatform):
             "port": port,
             "service_name": service_name,
             "install_dir": f"/opt/{service_name}",
+            "python_version": python_major_minor,
         }
 
         # 渲染脚本
@@ -111,7 +116,7 @@ class LinuxPlatform(BasePlatform):
             app_name = self.get_app_name(config)
             app_module = self.get_app_module(config)
             version = self.get_app_version(config)
-            python_version = self.get_python_version(config)
+            python_version = self.get_python_version(config, "linux")
             version_dir = f"{app_name}-{version}"
 
             # 清理旧版本目录
@@ -147,7 +152,9 @@ class LinuxPlatform(BasePlatform):
 
             # 6. 生成启动脚本
             self.logger.step(5, 6, "Generating launch scripts")
-            self._generate_run_script(bundle_dir, app_name, app_module, version_dir)
+            python_version = self.get_python_version(config, "linux")
+            python_major_minor = ".".join(python_version.split(".")[:2])
+            self._generate_run_script(bundle_dir, app_name, app_module, version, python_major_minor)
 
             # 7. 打包 tar.gz
             self.logger.step(6, 6, "Packaging tar.gz")
@@ -174,7 +181,9 @@ class LinuxPlatform(BasePlatform):
         bundle_dir = project_dir / "bundles" / "linux"
 
         # 使用 PBS Python 运行
-        runtime_python = bundle_dir / "runtime" / "bin" / "python3"
+        python_version = self.get_python_version(config, "linux")
+        python_major_minor = ".".join(python_version.split(".")[:2])
+        runtime_python = bundle_dir / "runtime" / "bin" / f"python{python_major_minor}"
         if not runtime_python.exists():
             self.logger.error("Python runtime not found. Run 'pyapp build linux' first.")
             return
@@ -251,12 +260,13 @@ class LinuxPlatform(BasePlatform):
         self.logger.info("Release package created")
         return result
 
-    def _generate_run_script(self, bundle_dir: Path, app_name: str, app_module: str, version_dir: str):
+    def _generate_run_script(self, bundle_dir: Path, app_name: str, app_module: str, version: str, python_version: str = "3.10"):
         """生成运行脚本"""
         run_script = bundle_dir / "run.sh"
         if run_script.exists():
             return
 
+        version_dir = f"{app_name}-{version}"
         script_content = f'''#!/bin/bash
 cd "$(dirname "$0")"
 
@@ -265,9 +275,10 @@ export PATH="runtime/bin:$PATH"
 export PYTHONPATH="{version_dir}/app:{version_dir}/app_packages:$PYTHONPATH"
 
 # 启动应用
-exec runtime/bin/python3 -m {app_module}
+exec runtime/bin/python{python_version} -m {app_module}
 '''
-        run_script.write_text(script_content, encoding="utf-8")
+        # 使用 Unix 行符（LF），确保 Linux 平台兼容
+        run_script.write_text(script_content, encoding="utf-8", newline="\n")
         try:
             run_script.chmod(0o755)
         except OSError:
@@ -350,4 +361,5 @@ exec runtime/bin/python3 -m {app_module}
         template = jinja_env.get_template(template_name)
         content = template.render(**variables)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(content, encoding="utf-8")
+        # 使用 Unix 行符（LF），确保 Linux 平台兼容
+        output_path.write_text(content, encoding="utf-8", newline="\n")

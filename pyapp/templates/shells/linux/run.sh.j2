@@ -3,10 +3,15 @@
 
 cd "$(dirname "$0")"
 
+APP_NAME="{{ app_name }}"
+VERSION="{{ version }}"
+PYTHON_VERSION="{{ python_version }}"
+VERSION_DIR="${APP_NAME}-${VERSION}"
+
 # Set environment variables
 export PATH="runtime/bin:$PATH"
-export PYTHONPATH="app:app_packages:$PYTHONPATH"
+export PYTHONPATH="${VERSION_DIR}/app:${VERSION_DIR}/app_packages:$PYTHONPATH"
 export APP_MODE="production"
 
 # Start the application
-exec runtime/bin/python3 -m {{ app_module }}
+exec runtime/bin/python${PYTHON_VERSION} -m {{ app_module }}

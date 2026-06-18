@@ -66,6 +66,12 @@ pyapp build windows
 # 构建 Linux 版
 pyapp build linux
 
+# 构建 Linux ARM64 版
+pyapp build linux --arch aarch64
+
+# 构建 Linux ARM32 版
+pyapp build linux --arch armv7l
+
 # 构建 Android 版
 pyapp build android
 
@@ -116,6 +122,24 @@ pyapp setup windows
 - 使用 Python Build Standalone (PBS) 运行时
 - 生成 systemd 服务文件
 - 输出 tar.gz 包
+- 支持多种 CPU 架构
+
+**支持的 CPU 架构**：
+
+- `x86_64`：64 位 x86 架构（默认）
+- `aarch64`：64 位 ARM 架构（如 Raspberry Pi 4、服务器）
+- `armv7l`：32 位 ARM 架构（如 Raspberry Pi 3）
+
+```bash
+# 构建 x86_64（默认）
+pyapp build linux
+
+# 构建 ARM64
+pyapp build linux --arch aarch64
+
+# 构建 ARM32
+pyapp build linux --arch armv7l
+```
 
 ### Android
 

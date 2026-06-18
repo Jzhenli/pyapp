@@ -123,7 +123,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.pyapp]
-python_version = "3.12.1"
+python_version = "3.10"
 app_module = "{module_name}"
 port = 18080
 

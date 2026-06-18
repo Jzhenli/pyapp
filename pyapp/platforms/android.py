@@ -69,7 +69,7 @@ class AndroidPlatform(BasePlatform):
         min_sdk = config.get("tool", {}).get("pyapp", {}).get("android", {}).get("min_sdk", 24)
         target_sdk = config.get("tool", {}).get("pyapp", {}).get("android", {}).get("target_sdk", 34)
         version = self.get_app_version(config)
-        python_version = self.get_python_version(config)
+        python_version = self.get_python_version(config, "android")
         port = self.get_port(config)
 
         # pip 索引配置
