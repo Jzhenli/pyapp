@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import sys
+import platform as pf
 from abc import ABC, abstractmethod
 from pathlib import Path
 from dataclasses import dataclass
@@ -258,7 +259,6 @@ class BasePlatform(ABC):
         # 检测跨架构编译
         is_cross_arch = False
         if platform == "linux" and arch:
-            import platform as pf
             machine = pf.machine().lower()
             # 检测架构不匹配
             if arch == "x86_64" and machine not in ("x86_64", "amd64"):
@@ -267,6 +267,12 @@ class BasePlatform(ABC):
                 is_cross_arch = True
             elif arch == "armv7l" and machine not in ("armv7l", "armv7"):
                 is_cross_arch = True
+
+        # 检测跨版本编译：目标 Python 版本与系统 Python 版本不同
+        python_version = self.get_python_version(config, platform)
+        major_minor = ".".join(python_version.split(".")[:2])
+        sys_major_minor = f"{sys.version_info.major}.{sys.version_info.minor}"
+        is_cross_version = (major_minor != sys_major_minor)
 
         # 使用 pyapp 的 packages 目录作为 pip 缓存
         cache_manager = CacheManager()
@@ -284,8 +290,8 @@ class BasePlatform(ABC):
                 f"Cross-platform compilation detected (building {platform}/{arch or 'native'} on {current_platform})"
             )
 
-            # 跨架构编译时使用 piwheels
-            if platform == "linux" and arch in ("aarch64", "armv7l"):
+            # 跨架构编译时使用 piwheels（仅 armv7l，piwheels 不提供 aarch64 包）
+            if platform == "linux" and arch == "armv7l":
                 self.logger.info(f"Using piwheels for {arch} architecture")
                 cmd.extend([
                     "--extra-index-url", "https://www.piwheels.org/simple",
@@ -301,14 +307,6 @@ class BasePlatform(ABC):
                 }.get(arch)
                 if pip_platform:
                     cmd.extend(["--platform", pip_platform])
-                    # 指定 Python 版本和 ABI
-                    python_version = self.get_python_version(config, platform)
-                    major_minor = ".".join(python_version.split(".")[:2])
-                    cmd.extend([
-                        "--python-version", major_minor,
-                        "--implementation", "cp",
-                        "--abi", f"cp{major_minor.replace('.', '')}",
-                    ])
 
             # 只使用预编译包
             cmd.extend([
@@ -317,9 +315,39 @@ class BasePlatform(ABC):
 
             self.logger.warning("Some packages with C extensions may not be available")
 
+        # 跨版本编译或跨平台编译时，指定目标 Python 版本和 ABI
+        if is_cross_version or is_cross_compile or is_cross_arch:
+            self.logger.info(f"Target Python version: {major_minor} (system: {sys_major_minor})")
+            cmd.extend([
+                "--python-version", major_minor,
+                "--implementation", "cp",
+                "--abi", f"cp{major_minor.replace('.', '')}",
+            ])
+
+            # 跨版本本平台编译时，也需要指定 platform 和 --only-binary
+            if not is_cross_compile and not is_cross_arch and is_cross_version:
+                if platform == "windows":
+                    cmd.extend(["--platform", "win_amd64"])
+                elif platform == "linux":
+                    machine = pf.machine().lower()
+                    if machine in ("x86_64", "amd64"):
+                        cmd.extend(["--platform", "manylinux2014_x86_64"])
+                    elif machine in ("aarch64", "arm64"):
+                        cmd.extend(["--platform", "manylinux2014_aarch64"])
+                cmd.extend(["--only-binary=:all:"])
+
         self.logger.info(f"Installing {len(dependencies)} dependencies for {platform}{'/' + arch if arch else ''}...")
         self.logger.info(f"Using pip cache: {pip_cache_dir}")
         result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # 显示 pip 安装详情
+        if result.stdout:
+            for line in result.stdout.splitlines():
+                stripped = line.strip()
+                if (stripped.startswith("Successfully installed") or
+                    stripped.startswith("Downloading ") or
+                    stripped.startswith("Collecting ")):
+                    self.logger.info(f"  {stripped}")
 
         if result.returncode != 0:
             self.logger.warning(f"Batch install failed, trying individually...")
@@ -334,36 +362,56 @@ class BasePlatform(ABC):
                     "--cache-dir", str(pip_cache_dir),
                 ]
 
-                # 跨架构编译时使用 piwheels
-                if platform == "linux" and arch in ("aarch64", "armv7l"):
+                # 跨架构编译时使用 piwheels（仅 armv7l）
+                if platform == "linux" and arch == "armv7l":
                     dep_cmd.extend(["--extra-index-url", "https://www.piwheels.org/simple"])
 
                 # 指定目标平台
-                if platform == "linux" and arch:
-                    pip_platform = {
-                        "x86_64": "manylinux2014_x86_64",
-                        "aarch64": "manylinux2014_aarch64",
-                        "armv7l": "linux_armv7l",
-                    }.get(arch)
-                    if pip_platform:
-                        dep_cmd.extend(["--platform", pip_platform])
-                        # 指定 Python 版本和 ABI
-                        python_version = self.get_python_version(config, platform)
-                        major_minor = ".".join(python_version.split(".")[:2])
-                        dep_cmd.extend([
-                            "--python-version", major_minor,
-                            "--implementation", "cp",
-                            "--abi", f"cp{major_minor.replace('.', '')}",
-                        ])
-
                 if is_cross_compile or is_cross_arch:
+                    if platform == "linux" and arch:
+                        pip_platform = {
+                            "x86_64": "manylinux2014_x86_64",
+                            "aarch64": "manylinux2014_aarch64",
+                            "armv7l": "linux_armv7l",
+                        }.get(arch)
+                        if pip_platform:
+                            dep_cmd.extend(["--platform", pip_platform])
+
                     dep_cmd.extend(["--only-binary=:all:"])
+
+                # 跨版本编译时，指定目标 Python 版本和 ABI
+                if is_cross_version or is_cross_compile or is_cross_arch:
+                    dep_cmd.extend([
+                        "--python-version", major_minor,
+                        "--implementation", "cp",
+                        "--abi", f"cp{major_minor.replace('.', '')}",
+                    ])
+
+                    # 跨版本本平台编译时，也需要指定 platform 和 --only-binary
+                    if not is_cross_compile and not is_cross_arch and is_cross_version:
+                        if platform == "windows":
+                            dep_cmd.extend(["--platform", "win_amd64"])
+                        elif platform == "linux":
+                            machine = pf.machine().lower()
+                            if machine in ("x86_64", "amd64"):
+                                dep_cmd.extend(["--platform", "manylinux2014_x86_64"])
+                            elif machine in ("aarch64", "arm64"):
+                                dep_cmd.extend(["--platform", "manylinux2014_aarch64"])
+                        dep_cmd.extend(["--only-binary=:all:"])
 
                 r = subprocess.run(dep_cmd, capture_output=True, text=True)
 
                 if r.returncode != 0:
                     failed.append(dep)
                     self.logger.warning(f"Failed to install {dep}")
+                else:
+                    if r.stdout:
+                        for line in r.stdout.splitlines():
+                            stripped = line.strip()
+                            if (stripped.startswith("Successfully installed") or
+                                stripped.startswith("Downloading ") or
+                                stripped.startswith("Collecting ")):
+                                self.logger.info(f"  {stripped}")
 
             if failed:
                 self.logger.error(f"Failed to install {len(failed)} packages: {', '.join(failed)}")

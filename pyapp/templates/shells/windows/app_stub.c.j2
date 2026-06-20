@@ -135,6 +135,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Wait for the process to complete
     WaitForSingleObject(pi.hProcess, INFINITE);
 
+    // Check exit code - only show error for real crashes, not user-initiated exits
+    DWORD exitCode = 0;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    // Exit code 1 = Ctrl+C / close console (normal user exit)
+    // 0xC000013A = STATUS_CONTROL_C_EXIT (user pressed Ctrl+C or closed console)
+    // Skip error dialog for these normal exit scenarios
+    if (exitCode != 0 && exitCode != 1 && exitCode != 0xC000013A) {
+        char errorMsg[512];
+        snprintf(errorMsg, sizeof(errorMsg),
+            "Application exited unexpectedly (code: 0x%08lX).\n\n"
+            "Try running from command line:\n  cd /d \"%s\"\n  %s",
+            exitCode, exeDir, cmdLine);
+        MessageBoxA(NULL, errorMsg, "{{ app_name }} - Error", MB_ICONERROR);
+    }
+
     // Cleanup
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);

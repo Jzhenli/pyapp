@@ -111,7 +111,7 @@ class WindowsPlatform(BasePlatform):
             runtime_manager.get_runtime("windows", python_version, runtime_dir)
 
             # 修改 _pth 文件以支持自定义导入路径
-            self._fix_pth_file(runtime_dir, version_dir)
+            self._fix_pth_file(runtime_dir, version_dir, python_version)
 
             # 4. 同步 Python 源码
             self.logger.step(2, 6, "Syncing Python source code")
@@ -332,7 +332,7 @@ pause
                 else:
                     raise
 
-    def _fix_pth_file(self, runtime_dir: Path, version_dir: str) -> None:
+    def _fix_pth_file(self, runtime_dir: Path, version_dir: str, python_version: str = "3.10") -> None:
         """修改 Embeddable Python 的 _pth 文件以支持自定义导入路径"""
         # 查找 _pth 文件
         pth_files = list(runtime_dir.glob("python*._pth"))
@@ -343,8 +343,12 @@ pause
         pth_file = pth_files[0]
         self.logger.info(f"Fixing _pth file: {pth_file}")
 
+        # 根据实际 Python 版本生成 zip 文件名
+        ver_tag = python_version.replace(".", "")[:3]  # "3.10" -> "310", "3.11" -> "311"
+        zip_name = f"python{ver_tag}.zip"
+
         # 写入新的内容
-        content = f"""python310.zip
+        content = f"""{zip_name}
 .
 
 # Custom paths for PyApp
