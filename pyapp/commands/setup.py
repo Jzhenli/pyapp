@@ -40,7 +40,11 @@ def setup_android():
 
     # 1. 安装 JDK 17
     jdk_dir = Path.home() / ".android-jdk"
-    if not jdk_dir.exists():
+    jdk_valid = jdk_dir.exists() and any(jdk_dir.glob("bin/java*"))
+    if not jdk_valid:
+        if jdk_dir.exists():
+            import shutil
+            shutil.rmtree(jdk_dir, ignore_errors=True)
         logger.info("Installing JDK 17...")
         _install_jdk(jdk_dir)
     else:
@@ -48,13 +52,68 @@ def setup_android():
 
     # 2. 安装 Android SDK
     sdk_dir = Path.home() / ".android-sdk"
-    if not sdk_dir.exists():
+    sdk_has_cmdline = sdk_dir.exists() and (sdk_dir / "cmdline-tools" / "latest").exists()
+    sdk_has_packages = (
+        (sdk_dir / "platform-tools").exists()
+        and (sdk_dir / "platforms").exists()
+        and (sdk_dir / "build-tools").exists()
+    )
+    if not sdk_has_cmdline:
+        if sdk_dir.exists():
+            import shutil
+            shutil.rmtree(sdk_dir, ignore_errors=True)
         logger.info("Installing Android SDK...")
         _install_android_sdk(sdk_dir)
+    elif not sdk_has_packages:
+        logger.info("Installing missing SDK packages...")
+        _install_sdk_packages(sdk_dir)
     else:
         logger.info(f"Android SDK already installed at {sdk_dir}")
 
-    # 3. 设置环境变量
+    # 3. 预下载 Gradle 发行版
+    # 从模板的 gradle-wrapper.properties 读取版本，避免硬编码不同步
+    template_props = Path(__file__).parent.parent / "templates" / "shells" / "android" / "gradle" / "wrapper" / "gradle-wrapper.properties"
+    gradle_url = None
+    if template_props.exists():
+        for line in template_props.read_text(encoding="utf-8").splitlines():
+            if line.startswith("distributionUrl="):
+                # distributionUrl 使用 \: 转义冒号，需要还原
+                gradle_url = line.split("=", 1)[1].strip().replace("\\:", ":")
+                break
+
+    if not gradle_url:
+        gradle_url = "https://services.gradle.org/distributions/gradle-8.13-bin.zip"
+
+    gradle_filename = gradle_url.split("/")[-1]
+    gradle_cache_dir = Path.home() / ".gradle" / "pyapp-cache"
+    local_zip = gradle_cache_dir / gradle_filename
+
+    # 检查 Gradle wrapper 自身缓存是否已有该版本
+    # wrapper 缓存目录名格式：gradle-8.13-bin（去掉 .zip 后缀）
+    gradle_version_name = gradle_filename.replace(".zip", "")
+    wrapper_dists = Path.home() / ".gradle" / "wrapper" / "dists"
+    gradle_in_wrapper_cache = False
+    if wrapper_dists.exists():
+        dist_dir = wrapper_dists / gradle_version_name
+        if dist_dir.exists():
+            for hash_dir in dist_dir.iterdir():
+                if hash_dir.is_dir():
+                    for uuid_dir in hash_dir.iterdir():
+                        if uuid_dir.is_dir() and (uuid_dir / "bin").exists():
+                            gradle_in_wrapper_cache = True
+                            break
+                    if gradle_in_wrapper_cache:
+                        break
+
+    if gradle_in_wrapper_cache:
+        logger.info(f"Gradle {gradle_version_name} already in wrapper cache")
+    elif not local_zip.exists():
+        logger.info("Pre-downloading Gradle distribution...")
+        _download_gradle(gradle_url, local_zip)
+    else:
+        logger.info(f"Gradle distribution already cached at {local_zip}")
+
+    # 4. 设置环境变量
     logger.info("")
     logger.info("Environment variables (add to your shell profile):")
     logger.info(f'  JAVA_HOME = "{jdk_dir}"')
@@ -129,15 +188,15 @@ def _install_jdk(jdk_dir: Path):
     from urllib.request import urlopen, Request
     from urllib.error import URLError
 
-    jdk_dir.mkdir(parents=True, exist_ok=True)
+    logger = get_logger()
 
     if os.name == "nt":
-        # Windows: 下载 JDK zip
-        url = "https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_windows-x64_bin.zip"
+        # Windows: 下载 Adoptium/Temurin JDK 17 (包含完整SSL证书)
+        url = "https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jdk/hotspot/normal/eclipse"
         archive_name = "jdk-17.zip"
     else:
-        # Linux: 下载 JDK tar.gz
-        url = "https://download.java.net/java/GA/jdk17.0.2/dfd4a8d0985749f896bed50d7138ee7f/8/GPL/openjdk-17.0.2_linux-x64_bin.tar.gz"
+        # Linux: 下载 Adoptium/Temurin JDK 17 (包含完整SSL证书)
+        url = "https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse"
         archive_name = "jdk-17.tar.gz"
 
     archive_path = jdk_dir.parent / archive_name
@@ -161,7 +220,7 @@ def _install_jdk(jdk_dir: Path):
             with tarfile.open(archive_path, "r:gz") as tf:
                 tf.extractall(jdk_dir.parent)
 
-        # 查找解压后的目录
+        # 查找解压后的目录 (OpenJDK: jdk-17.x.x, Temurin: jdk-17.x.x+xx)
         jdk_inner = None
         for d in jdk_dir.parent.iterdir():
             if d.is_dir() and d.name.startswith("jdk-17"):
@@ -191,7 +250,7 @@ def _install_android_sdk(sdk_dir: Path):
     from urllib.request import urlopen, Request
     from urllib.error import URLError
 
-    sdk_dir.mkdir(parents=True, exist_ok=True)
+    logger = get_logger()
 
     # 下载 Android command-line tools
     if os.name == "nt":
@@ -245,6 +304,8 @@ def _install_android_sdk(sdk_dir: Path):
 
 def _install_sdk_packages(sdk_dir: Path):
     """安装 Android SDK 组件"""
+    logger = get_logger()
+
     if os.name == "nt":
         sdkmanager = sdk_dir / "cmdline-tools" / "latest" / "bin" / "sdkmanager.bat"
     else:
@@ -270,12 +331,45 @@ def _install_sdk_packages(sdk_dir: Path):
 
     for package in packages:
         logger.info(f"  Installing {package}...")
+        cmd = [str(sdkmanager), f"--sdk_root={sdk_dir}", package]
+        if os.name == "nt" and str(sdkmanager).endswith(".bat"):
+            cmd = ["cmd", "/c"] + cmd
         result = subprocess.run(
-            [str(sdkmanager), "--sdk_root=" + str(sdk_dir), package],
+            cmd,
             capture_output=True,
             text=True,
             env=env,
             input="y\n",  # Accept license
         )
         if result.returncode != 0:
-            logger.warning(f"  Failed to install {package}: {result.stderr}")
+            error_output = (result.stderr or result.stdout or "unknown error").strip()
+            logger.warning(f"  Failed to install {package}: {error_output}")
+
+
+def _download_gradle(url: str, dest: Path):
+    """用 Python 下载 Gradle 发行版（避免 Java SSL 证书问题）"""
+    from urllib.request import urlopen, Request
+    from urllib.error import URLError
+
+    logger = get_logger()
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        request = Request(url, headers={"User-Agent": "PyApp-CLI/1.0"})
+        with urlopen(request, timeout=600) as response:
+            total = response.headers.get("Content-Length")
+            total_mb = f"{int(total) / 1024 / 1024:.1f}MB" if total else "unknown size"
+            logger.info(f"Downloading {dest.name} ({total_mb})...")
+            with open(dest, "wb") as f:
+                while True:
+                    chunk = response.read(8192)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+        logger.success(f"Gradle distribution saved to {dest}")
+    except URLError as e:
+        logger.error(f"Failed to download Gradle: {e}")
+        logger.info("Gradle will be downloaded by the wrapper during build (may fail with SSL issues)")
+        logger.info("  Manual download: " + url)
+        logger.info(f"  Save to: {dest}")

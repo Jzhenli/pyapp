@@ -1,5 +1,6 @@
 """平台抽象基类"""
 
+import re
 import shutil
 import subprocess
 import sys
@@ -216,6 +217,7 @@ class BasePlatform(ABC):
 
                 self.logger.info(f"Running: {' '.join(dep_cmd)}")
                 dep_result = subprocess.run(dep_cmd, capture_output=True, text=True)
+
                 if dep_result.returncode != 0:
                     self.logger.error(f"Failed to install {dep}")
                     if dep_result.stderr:
@@ -358,6 +360,7 @@ class BasePlatform(ABC):
                     dep_cmd.extend(["--only-binary=:all:"])
 
                 r = subprocess.run(dep_cmd, capture_output=True, text=True)
+
                 if r.returncode != 0:
                     failed.append(dep)
                     self.logger.warning(f"Failed to install {dep}")

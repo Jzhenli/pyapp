@@ -107,6 +107,7 @@ class AndroidPlatform(BasePlatform):
             "version": version,
             "python_version": python_version,
             "python_major_minor": ".".join(python_version.split(".")[:2]),
+            "build_python": self._find_build_python(python_version),
             "pip_index_url": pip_index_url,
             "pip_extra_index_urls": pip_extra_index_urls,
             "pip_timeout": pip_timeout,
@@ -249,7 +250,7 @@ class AndroidPlatform(BasePlatform):
             gradle_path = bundle_dir / gradle_cmd
 
             build_task = "assembleDebug" if build_type == "debug" else "assembleRelease"
-            
+
             # 确保环境变量传递给子进程
             env = os.environ.copy()
             if "JAVA_HOME" not in env or not Path(env["JAVA_HOME"]).exists():
@@ -264,6 +265,9 @@ class AndroidPlatform(BasePlatform):
                 sdk_dir = Path.home() / ".android-sdk"
                 if sdk_dir.exists():
                     env["ANDROID_HOME"] = str(sdk_dir)
+
+            # 预下载 Gradle 发行版（用 Python 下载避免 Java SSL 证书问题）
+            self._preload_gradle_distribution(bundle_dir, env)
             
             # 使用 --console plain 让 Gradle 输出更清晰
             result = subprocess.run(
@@ -286,11 +290,14 @@ class AndroidPlatform(BasePlatform):
                         arch = line.split("Installing for")[-1].strip()
                         self.logger.info(f"")
                         self.logger.info(f"Installing packages for {arch}:")
-                    elif "Installing collected packages:" in line:
-                        packages = line.split("Installing collected packages:")[-1].strip()
-                        for pkg in packages.split(", "):
-                            if pkg:
-                                self.logger.info(f"  - {pkg}")
+                    # 显示 Successfully installed 行（包含包名和版本）
+                    elif line.startswith("Successfully installed "):
+                        packages = line[len("Successfully installed "):].strip()
+                        for pkg in packages.split():
+                            self.logger.info(f"  {pkg}")
+                    # 显示 wheel 下载信息（包含完整名称、版本和架构）
+                    elif line.startswith("Downloading "):
+                        self.logger.info(f"  {line}")
                     # 显示任务执行、成功/失败等
                     elif any(keyword in line for keyword in [
                         "BUILD", "FAILED", "SUCCESS", "actionable"
@@ -1108,6 +1115,103 @@ def get_status() -> dict:
             "port": _actual_port if _server_thread and _server_thread.is_alive() else None,
         }}
 '''
+
+    @staticmethod
+    def _find_build_python(python_version: str) -> str:
+        """查找本地 Python 可执行文件路径，用于 Chaquopy 的 buildPython 配置
+
+        Chaquopy 要求 buildPython 的主版本号和次版本号与 app 的 Python 版本一致。
+        参考: https://chaquo.com/chaquopy/doc/current/android.html#buildpython
+        """
+        import shutil
+
+        major_minor = ".".join(python_version.split(".")[:2])
+
+        # 按优先级尝试不同的 Python 命令
+        if os.name == "nt":
+            # Windows: 尝试 py -X.Y, py -X, python
+            candidates = [
+                (["py", f"-{major_minor}"], f"py -{major_minor}"),
+                (["py", f"-{python_version.split('.')[0]}"], f"py -{python_version.split('.')[0]}"),
+            ]
+        else:
+            # Linux/Mac: 尝试 pythonX.Y, python3, python
+            candidates = [
+                ([f"python{major_minor}"], f"python{major_minor}"),
+                (["python3"], "python3"),
+            ]
+
+        # 所有平台最后都尝试 python
+        candidates.append((["python"], "python"))
+
+        for cmd, display in candidates:
+            exe_path = shutil.which(cmd[0])
+            if exe_path:
+                # 验证版本是否匹配
+                try:
+                    result = subprocess.run(
+                        [exe_path] + cmd[1:] + ["--version"],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    version_str = (result.stdout or result.stderr).strip()
+                    if major_minor in version_str:
+                        return exe_path.replace("\\", "/")
+                except (subprocess.TimeoutExpired, OSError):
+                    continue
+
+        # 未找到匹配版本，返回空字符串（让 Chaquopy 自动查找）
+        return ""
+
+    def _preload_gradle_distribution(self, bundle_dir: Path, env: dict):
+        """将 Gradle 发行版 URL 替换为本地缓存路径，避免 Java SSL 证书问题
+
+        依赖 pyapp setup android 预下载的 Gradle 发行版缓存。
+        如果缓存不存在，则检查 Gradle wrapper 自身缓存是否已有该版本，
+        如果有则跳过（让 wrapper 直接使用自己的缓存）。
+        """
+        # 读取 gradle-wrapper.properties 获取 distributionUrl
+        props_file = bundle_dir / "gradle" / "wrapper" / "gradle-wrapper.properties"
+        if not props_file.exists():
+            return
+
+        props_text = props_file.read_text(encoding="utf-8")
+        distribution_url = None
+        for line in props_text.splitlines():
+            if line.startswith("distributionUrl="):
+                distribution_url = line.split("=", 1)[1].strip()
+                break
+
+        if not distribution_url or distribution_url.startswith("file://"):
+            return
+
+        # 检查 Gradle wrapper 自身缓存是否已有该版本
+        # wrapper 缓存目录名格式：gradle-8.13-bin（去掉 .zip 后缀）
+        filename = distribution_url.split("/")[-1]
+        version_dir_name = filename.replace(".zip", "")
+        wrapper_dists = Path.home() / ".gradle" / "wrapper" / "dists"
+        if wrapper_dists.exists():
+            dist_dir = wrapper_dists / version_dir_name
+            if dist_dir.exists():
+                # 检查是否有已解压的 Gradle 发行版（包含 bin/ 目录）
+                for hash_dir in dist_dir.iterdir():
+                    if hash_dir.is_dir():
+                        for uuid_dir in hash_dir.iterdir():
+                            if uuid_dir.is_dir() and (uuid_dir / "bin").exists():
+                                self.logger.info(f"Gradle {version_dir_name} already in wrapper cache")
+                                return
+
+        # 检查 pyapp 预下载缓存是否存在
+        local_zip = Path.home() / ".gradle" / "pyapp-cache" / filename
+
+        if local_zip.exists():
+            # 修改 gradle-wrapper.properties 使用本地文件
+            local_url = local_zip.as_uri()  # 生成 file:/// URL
+            new_props = props_text.replace(distribution_url, local_url)
+            props_file.write_text(new_props, encoding="utf-8")
+            self.logger.info(f"Using local Gradle distribution: {local_zip.name}")
+        else:
+            self.logger.info("Gradle distribution not cached, wrapper will download via HTTPS")
+            self.logger.info("  Run 'pyapp setup android' to pre-download Gradle")
 
     def _create_gradle_wrapper(self, bundle_dir: Path):
         """创建 Gradle Wrapper 文件（从模板目录复制）"""

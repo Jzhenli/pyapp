@@ -41,6 +41,9 @@ android {
 chaquopy {
     defaultConfig {
         version = "{{ python_major_minor }}"
+{% if build_python %}
+        buildPython("{{ build_python }}")
+{% endif %}
         // Extract resources package to filesystem for static file access
         extractPackages("{{ app_module }}.resources")
         pip {
