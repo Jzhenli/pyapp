@@ -23,8 +23,8 @@ class WindowsPlatform(BasePlatform):
     WEBVIEW2_SDK_VERSION = "1.0.2792.45"
 
     # rcedit 版本（用于修改 python.exe 的 VERSIONINFO）
-    RCEDIT_VERSION = "1.1.1"
-    RCEDIT_URL = "https://github.com/electron/rcedit/releases/download/v{version}/rcedit-v{version}-windows-x64.zip"
+    RCEDIT_VERSION = "2.0.0"
+    RCEDIT_URL = "https://github.com/electron/rcedit/releases/download/v{version}/rcedit-x64.exe"
 
     def check_environment(self) -> tuple:
         """检查 Windows 开发环境"""
@@ -140,7 +140,7 @@ class WindowsPlatform(BasePlatform):
             zip_filename = f"{app_name}-{version}-windows-x86_64.zip"
             zip_path = dist_dir / zip_filename
 
-            self._create_zip(bundle_dir, zip_path)
+            self._create_zip(bundle_dir, zip_path, zip_filename.replace(".zip", ""))
 
             self.logger.success(f"Package: {zip_path}")
 
@@ -479,6 +479,13 @@ pause
         rcedit_dir = tools_dir / f"rcedit-v{self.RCEDIT_VERSION}"
         rcedit_exe = rcedit_dir / "rcedit.exe"
 
+        # 清理旧版本缓存目录
+        if tools_dir.exists():
+            for d in tools_dir.iterdir():
+                if d.is_dir() and d.name.startswith("rcedit-v") and d.name != f"rcedit-v{self.RCEDIT_VERSION}":
+                    self.logger.info(f"Removing old rcedit cache: {d.name}")
+                    shutil.rmtree(d, ignore_errors=True)
+
         # 已存在则验证是否可用
         if rcedit_exe.exists():
             try:
@@ -495,26 +502,20 @@ pause
         self.logger.info(f"Downloading rcedit v{self.RCEDIT_VERSION}...")
         try:
             import urllib.request
-            import tempfile
 
             url = self.RCEDIT_URL.format(version=self.RCEDIT_VERSION)
-            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
-                urllib.request.urlretrieve(url, tmp_zip.name)
-                tmp_zip_path = tmp_zip.name
-
             rcedit_dir.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(tmp_zip_path, "r") as zf:
-                zf.extractall(rcedit_dir)
+            urllib.request.urlretrieve(url, str(rcedit_exe))
 
-            Path(tmp_zip_path).unlink(missing_ok=True)
-
-            if rcedit_exe.exists():
+            if rcedit_exe.exists() and rcedit_exe.stat().st_size > 0:
                 self.logger.success(f"rcedit downloaded to {rcedit_dir}")
                 return rcedit_exe
             else:
-                self.logger.warning("rcedit.exe not found in downloaded archive")
+                rcedit_exe.unlink(missing_ok=True)
+                self.logger.warning("rcedit.exe download failed or file is empty")
                 return None
         except Exception as e:
+            rcedit_exe.unlink(missing_ok=True)
             self.logger.warning(f"Failed to download rcedit: {e}")
             return None
 
@@ -544,7 +545,7 @@ import site
         pth_file.write_text(content, encoding="utf-8")
         self.logger.success(f"Updated {pth_file.name} with custom import paths")
 
-    def _create_zip(self, source_dir: Path, zip_path: Path):
+    def _create_zip(self, source_dir: Path, zip_path: Path, top_dir: str = ""):
         """创建 ZIP 包，排除编译源文件和 WebView2 头文件"""
         exclude_files = {
             "app_stub.cpp",
@@ -561,6 +562,8 @@ import site
                     if file_path.name in exclude_files:
                         continue
                     arcname = file_path.relative_to(source_dir)
+                    if top_dir:
+                        arcname = Path(top_dir) / arcname
                     zf.write(file_path, arcname)
 
     def _update_stub_sources(self, project_dir: Path, config: Dict[str, Any]) -> None:

@@ -162,7 +162,7 @@ class LinuxPlatform(BasePlatform):
             tar_filename = f"{app_name}-{version}-linux-{arch}.tar.gz"
             tar_path = dist_dir / tar_filename
 
-            self._create_tarball(bundle_dir, tar_path)
+            self._create_tarball(bundle_dir, tar_path, tar_filename.replace(".tar.gz", ""))
 
             self.logger.success(f"Package: {tar_path}")
 
@@ -312,12 +312,14 @@ exec runtime/bin/python{python_version} -m {app_module}
                 else:
                     raise
 
-    def _create_tarball(self, source_dir: Path, tar_path: Path):
+    def _create_tarball(self, source_dir: Path, tar_path: Path, top_dir: str = ""):
         """创建 tar.gz 包"""
         with tarfile.open(tar_path, "w:gz") as tf:
             for file_path in source_dir.rglob("*"):
                 if file_path.is_file():
                     arcname = file_path.relative_to(source_dir)
+                    if top_dir:
+                        arcname = str(Path(top_dir) / arcname).replace("\\", "/")
                     tf.add(file_path, arcname)
 
     def _get_run_env(self, bundle_dir: Path, version_dir: str = "app") -> dict:
