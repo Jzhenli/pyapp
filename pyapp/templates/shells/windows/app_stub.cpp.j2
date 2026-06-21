@@ -79,6 +79,8 @@ static AppConfig g_cfg = {};
 static char g_exeDir[MAX_PATH] = {};
 static volatile LONG g_exiting = 0;  // flag: app is shutting down
 static int g_serverWaitCount = 0;    // timer tick count for server wait
+static bool g_serverReady = false;   // flag: server health check passed
+static bool g_navigated = false;     // flag: app URL has been navigated
 
 // WebView2 globals
 static HMODULE g_hWebView2Dll = NULL;
@@ -277,27 +279,28 @@ static bool check_health(int port, DWORD timeoutMs = 1000) {
 }
 
 // Check if a TCP port is available for binding.
-// Uses bind() WITH SO_REUSEADDR to match the behavior of Python 3.10+ uvicorn,
-// which enables SO_REUSEADDR by default (reuse_address=True).
-// On Windows, SO_REUSEADDR allows binding to a port in TIME_WAIT state,
-// so this returns TRUE when the port is in TIME_WAIT (which is acceptable
-// because uvicorn can also bind to it). It returns FALSE only when another
-// process is actively listening on the port.
+// Uses bind() WITHOUT SO_REUSEADDR. On Windows, SO_REUSEADDR allows
+// "port stealing" (binding to a port another process is already listening on),
+// which makes the check unreliable. Without SO_REUSEADDR, bind() succeeds
+// only for truly free ports and fails for ports in TIME_WAIT or in use.
+// A port in TIME_WAIT will fail this check, but that's acceptable because:
+//   1. We've already verified with check_health() that no server is listening.
+//   2. uvicorn with reuse_address=True can still bind to TIME_WAIT ports.
+//   3. The warning message is non-fatal (application proceeds anyway).
 static bool is_port_available(int port) {
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) return true;  // Assume available
+    // Initialize WinSock once; skip WSACleanup to avoid affecting other
+    // components. The OS cleans up when the process exits.
+    static bool s_wsaInitialized = false;
+    if (!s_wsaInitialized) {
+        WSADATA wsaData;
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) return true;
+        s_wsaInitialized = true;
+    }
 
     SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == INVALID_SOCKET) {
-        WSACleanup();
         return true;  // Assume available
     }
-
-    // Enable SO_REUSEADDR to match uvicorn's behavior (Python 3.10+).
-    // This allows binding to a port in TIME_WAIT, which is safe for our
-    // use case since we've already verified no other server is listening.
-    BOOL reuse = TRUE;
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
 
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
@@ -307,7 +310,6 @@ static bool is_port_available(int port) {
     bool available = (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) == 0);
 
     closesocket(sock);
-    WSACleanup();
     return available;
 }
 
@@ -317,15 +319,6 @@ static bool is_child_running() {
     DWORD exitCode = 0;
     if (!GetExitCodeProcess(g_hChildProcess, &exitCode)) return false;
     return (exitCode == STILL_ACTIVE);
-}
-
-static bool wait_for_server(int port, int timeoutSec) {
-    for (int i = 0; i < timeoutSec * 1000 / TIMER_SERVER_INTERVAL_MS; i++) {
-        if (check_health(port)) return true;
-        if (!is_child_running()) return false;
-        Sleep(TIMER_SERVER_INTERVAL_MS);
-    }
-    return false;
 }
 
 // ========== Child Process Management ==========
@@ -455,8 +448,18 @@ static BOOL WINAPI console_ctrl_handler(DWORD ctrlType) {
     case CTRL_CLOSE_EVENT:
     case CTRL_LOGOFF_EVENT:
     case CTRL_SHUTDOWN_EVENT:
-        // Terminate child process before the parent exits
-        terminate_child();
+        if (g_hWnd) {
+            // UI mode: post WM_CLOSE to let the main thread handle shutdown.
+            // This avoids data races between this thread and the main thread
+            // on g_hChildProcess / g_hJob / g_webview etc.
+            PostMessage(g_hWnd, WM_CLOSE, 0, 0);
+        } else {
+            // Console/headless mode: no message loop, terminate directly.
+            // Race condition with main thread is unlikely in practice because
+            // the main thread is blocked in WaitForSingleObject(g_hChildProcess),
+            // which returns immediately after TerminateProcess.
+            terminate_child();
+        }
         return TRUE;
     }
     return FALSE;
@@ -526,6 +529,11 @@ static void resize_webview() {
         GetClientRect(g_hWnd, &bounds);
         g_webviewController->put_Bounds(bounds);
     }
+}
+
+// Build the application URL for WebView2 navigation
+static void build_app_url(WCHAR *buf, size_t bufSize) {
+    swprintf(buf, bufSize, L"http://127.0.0.1:%d%hs", g_cfg.port, g_cfg.start_path);
 }
 
 // Callback: WebView2 controller created
@@ -605,6 +613,18 @@ body {
         g_webview->NavigateToString(wHtml);
 
         g_webviewReady = true;
+
+        // If the server is already ready, navigate immediately instead of
+        // waiting for the next timer tick. This avoids the race condition
+        // where the health check succeeds before WebView2 is initialized.
+        if (g_serverReady && !g_navigated) {
+            g_navigated = true;
+            WCHAR url[512];
+            build_app_url(url, 512);
+            g_webview->Navigate(url);
+            KillTimer(g_hWnd, TIMER_SERVER_WAIT);
+        }
+
         return S_OK;
     }
 
@@ -768,15 +788,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_DESTROY:
         KillTimer(hwnd, TIMER_SERVER_WAIT);
+        g_serverReady = false;
+        g_navigated = false;
         destroy_webview();
         remove_tray_icon();
         PostQuitMessage(0);
         return 0;
 
     case WM_ENDSESSION:
-        // System shutdown or user logoff - kill child process immediately
+        // System shutdown or user logoff - kill child process and exit quickly.
+        // PostQuitMessage ensures the message loop exits, otherwise the app
+        // keeps running until the system forcefully terminates it.
         if (wParam) {
             terminate_child();
+            PostQuitMessage(0);
         }
         return 0;
 
@@ -804,6 +829,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (wParam == TIMER_SERVER_WAIT) {
             g_serverWaitCount++;
 
+            // If already navigated or exiting, skip (pending WM_TIMER after KillTimer,
+            // or during system shutdown after WM_ENDSESSION called terminate_child)
+            if (g_navigated || g_exiting) return 0;
+
             // Check if child process has exited prematurely
             if (!is_child_running()) {
                 KillTimer(hwnd, TIMER_SERVER_WAIT);
@@ -823,20 +852,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
 
-            if (check_health(g_cfg.port)) {
-                // Server is ready - navigate to the app
+            if (!g_serverReady && check_health(g_cfg.port)) {
+                g_serverReady = true;
+            }
+
+            if (g_serverReady && g_webview) {
+                // Both server and WebView2 are ready - navigate to the app
+                g_navigated = true;
                 KillTimer(hwnd, TIMER_SERVER_WAIT);
-                if (g_webview) {
-                    WCHAR url[512];
-                    swprintf(url, 512, L"http://127.0.0.1:%d%hs", g_cfg.port, g_cfg.start_path);
-                    g_webview->Navigate(url);
-                }
+                WCHAR url[512];
+                build_app_url(url, 512);
+                g_webview->Navigate(url);
             } else if (g_serverWaitCount >= SERVER_WAIT_TIMEOUT_SEC * 1000 / TIMER_SERVER_INTERVAL_MS) {
-                // Timeout - server didn't start
+                // Timeout - server or WebView2 didn't become ready
                 KillTimer(hwnd, TIMER_SERVER_WAIT);
                 MessageBoxA(hwnd,
-                    "Failed to start application server.\n\n"
-                    "The server did not respond within 30 seconds.",
+                    "Failed to start application.\n\n"
+                    "The server or UI did not become ready within 30 seconds.\n"
+                    "Try running with --console for more details.",
                     "{{ app_name }} - Error", MB_ICONERROR);
                 DestroyWindow(hwnd);
             }
@@ -953,6 +986,8 @@ static int run_ui_mode() {
     // The WebView2 currently shows a loading page.
     // Once the server is ready, the timer handler will navigate to the app URL.
     g_serverWaitCount = 0;
+    g_serverReady = false;
+    g_navigated = false;
     SetTimer(g_hWnd, TIMER_SERVER_WAIT, TIMER_SERVER_INTERVAL_MS, NULL);
 
     // 7. Message loop
@@ -1011,11 +1046,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
             return 0;
         }
 
-        // Window not found but Mutex exists - previous instance is shutting down.
-        // Wait for it to release the Mutex (up to 5 seconds).
+        // Window not found but Mutex exists - previous instance may be shutting down,
+        // or running in console/headless mode (which has no window to find).
+        // Wait for the Mutex to be released (up to 2 seconds).
         HANDLE hWait = OpenMutexA(SYNCHRONIZE, FALSE, "{{ app_name }}-SingleInstance");
         if (hWait) {
-            WaitForSingleObject(hWait, 5000);
+            WaitForSingleObject(hWait, 2000);
             CloseHandle(hWait);
         }
 
@@ -1058,20 +1094,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     // 4.6 Clean up leftover server on the port (defensive check)
     // If a previous instance crashed without releasing the port,
     // try to shut down the orphan server before starting a new one.
-    if (check_health(g_cfg.port, 2000)) {
+    if (check_health(g_cfg.port, 500)) {
         send_shutdown_request(g_cfg.port);
         // Wait for the server to stop responding to health checks
-        for (int i = 0; i < 20; i++) {
-            if (!check_health(g_cfg.port, 2000)) break;
+        for (int i = 0; i < 10; i++) {
+            if (!check_health(g_cfg.port, 500)) break;
             Sleep(250);
         }
     }
 
     // Wait for the port to be available for binding.
-    // With SO_REUSEADDR (matching Python 3.10+ uvicorn behavior), a port in
-    // TIME_WAIT is considered available, so this loop typically exits immediately.
-    // It only waits if another process is still actively listening on the port,
-    // which should be rare since we already sent a shutdown request above.
+    // Without SO_REUSEADDR, a port in TIME_WAIT will fail this check,
+    // but uvicorn with reuse_address=True can still bind to it.
+    // This loop mainly catches the case where the old server is slow to exit.
     for (int i = 0; i < 12; i++) {  // up to 3 seconds
         if (is_port_available(g_cfg.port)) break;
         Sleep(250);
@@ -1097,6 +1132,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     int result;
     if (strcmp(g_cfg.mode, "ui") == 0) {
         result = run_ui_mode();
+        // WebView2 async failure may have changed mode to "console".
+        // The async callback posts WM_CLOSE which exits the message loop,
+        // but run_ui_mode() returns without falling back to console mode.
+        if (strcmp(g_cfg.mode, "console") == 0) {
+            result = run_console_mode();
+        }
     } else if (strcmp(g_cfg.mode, "console") == 0) {
         result = run_console_mode();
     } else {
