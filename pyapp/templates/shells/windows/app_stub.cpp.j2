@@ -326,7 +326,7 @@ static bool is_child_running() {
 static bool start_child_process() {
     char cmdLine[MAX_PATH * 3];
     snprintf(cmdLine, sizeof(cmdLine),
-        "\"%s\\runtime\\python.exe\" -m %s",
+        "\"%s\\runtime\\{{ app_name }}-runtime.exe\" -m %s",
         g_exeDir, g_cfg.app_module);
 
     // Set environment variables

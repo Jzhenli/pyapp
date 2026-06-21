@@ -22,6 +22,10 @@ class WindowsPlatform(BasePlatform):
     # 更新此版本时需验证 NuGet 包内 x64 DLL 路径未变
     WEBVIEW2_SDK_VERSION = "1.0.2792.45"
 
+    # rcedit 版本（用于修改 python.exe 的 VERSIONINFO）
+    RCEDIT_VERSION = "1.1.1"
+    RCEDIT_URL = "https://github.com/electron/rcedit/releases/download/v{version}/rcedit-v{version}-windows-x64.zip"
+
     def check_environment(self) -> tuple:
         """检查 Windows 开发环境"""
         missing = []
@@ -95,31 +99,43 @@ class WindowsPlatform(BasePlatform):
             # 修改 _pth 文件以支持自定义导入路径
             self._fix_pth_file(runtime_dir, version_dir, python_version)
 
+            # 3.5 复制 python.exe 为 {{app_name}}-runtime.exe 并修改 VERSIONINFO
+            self.logger.step(2, 8, "Creating runtime executable")
+            icon_str = self.get_icon(config, "windows")
+            icon_path = None
+            if icon_str:
+                icon_candidate = project_dir / icon_str
+                if icon_candidate.exists():
+                    icon_path = icon_candidate
+                else:
+                    self.logger.warning(f"Icon file not found: {icon_candidate}")
+            self._create_runtime_exe(runtime_dir, app_name, version, icon_path)
+
             # 4. 同步 Python 源码
-            self.logger.step(2, 8, "Syncing Python source code")
+            self.logger.step(3, 8, "Syncing Python source code")
             self.sync_source_code(project_dir, "windows", config)
 
             # 5. 同步前端资源
-            self.logger.step(3, 8, "Syncing frontend resources")
+            self.logger.step(4, 8, "Syncing frontend resources")
             self.sync_frontend_dist(project_dir, "windows", config)
 
             # 6. 安装依赖
-            self.logger.step(4, 8, "Installing dependencies")
+            self.logger.step(5, 8, "Installing dependencies")
             self.install_dependencies(project_dir, config, "windows")
 
             # 7. 编译 Stub（可选）
-            self.logger.step(5, 8, "Compiling Stub")
+            self.logger.step(6, 8, "Compiling Stub")
             exe_path = self._compile_stub(bundle_dir, app_name)
             if not exe_path:
                 # 创建启动脚本替代
                 exe_path = self._create_launch_script(bundle_dir, app_name, app_module, version_dir, config)
 
             # 7.5 下载 WebView2Loader.dll（UI 模式需要）
-            self.logger.step(6, 8, "Downloading WebView2Loader.dll")
+            self.logger.step(7, 8, "Downloading WebView2Loader.dll")
             self._download_webview2_loader(bundle_dir)
 
             # 8. 打包 ZIP
-            self.logger.step(7, 8, "Packaging ZIP")
+            self.logger.step(8, 8, "Packaging ZIP")
             dist_dir = self.ensure_dist_dir(project_dir)
             zip_filename = f"{app_name}-{version}-windows-x86_64.zip"
             zip_path = dist_dir / zip_filename
@@ -157,7 +173,9 @@ class WindowsPlatform(BasePlatform):
             return
 
         # 使用 Python 直接运行
-        runtime_python = bundle_dir / "runtime" / "python.exe"
+        runtime_python = bundle_dir / "runtime" / f"{app_name}-runtime.exe"
+        if not runtime_python.exists():
+            runtime_python = bundle_dir / "runtime" / "python.exe"
         if runtime_python.exists():
             app_dir = bundle_dir / version_dir / "app"
             subprocess.Popen(
@@ -283,13 +301,14 @@ class WindowsPlatform(BasePlatform):
         """创建启动脚本（替代 Stub，当编译失败时使用）"""
         port = self.get_port(config)
         script_path = bundle_dir / f"{app_name}.bat"
+        runtime_exe = f"{app_name}-runtime.exe"
         script_content = f'''@echo off
 cd /d "%~dp0"
 set PATH=runtime;runtime\\Scripts;%PATH%
 set PYTHONPATH={version_dir}\\app;{version_dir}\\app_packages;%PYTHONPATH%
 set APP_MODE=production
 set APP_PORT={port}
-python -m {app_module}
+runtime\\{runtime_exe} -m {app_module}
 pause
 '''
         script_path.write_text(script_content, encoding="utf-8")
@@ -404,6 +423,101 @@ pause
                 else:
                     raise
 
+    def _create_runtime_exe(self, runtime_dir: Path, app_name: str, version: str, icon_path: Optional[Path] = None) -> None:
+        """复制 python.exe 为 {app_name}-runtime.exe 并用 rcedit 修改 VERSIONINFO 和图标
+
+        使任务管理器显示应用名而非 "Python"。
+        保留原始 python.exe 以便调试和兼容。
+        """
+        src_python = runtime_dir / "python.exe"
+        dst_runtime = runtime_dir / f"{app_name}-runtime.exe"
+
+        if not src_python.exists():
+            self.logger.warning("python.exe not found in runtime, skipping runtime exe creation")
+            return
+
+        # 清理旧的 runtime exe（app_name 变更时残留）
+        for old_runtime in runtime_dir.glob("*-runtime.exe"):
+            if old_runtime.name != f"{app_name}-runtime.exe":
+                old_runtime.unlink(missing_ok=True)
+
+        # 复制 python.exe 为应用专属的运行时可执行文件
+        shutil.copy2(src_python, dst_runtime)
+        self.logger.info(f"Copied {src_python.name} -> {dst_runtime.name}")
+
+        # 用 rcedit 修改 VERSIONINFO
+        rcedit_path = self._get_rcedit()
+        if rcedit_path:
+            try:
+                cmd = [
+                    str(rcedit_path),
+                    str(dst_runtime),
+                    "--set-version-string", "FileDescription", app_name,
+                    "--set-version-string", "ProductName", app_name,
+                    "--set-version-string", "OriginalFilename", f"{app_name}-runtime.exe",
+                    "--set-version-string", "InternalName", f"{app_name}-runtime",
+                    "--set-file-version", version,
+                    "--set-product-version", version,
+                ]
+                if icon_path and icon_path.exists():
+                    cmd.extend(["--set-icon", str(icon_path)])
+                subprocess.run(cmd, capture_output=True, text=True, check=True)
+                self.logger.success(f"VERSIONINFO updated for {dst_runtime.name}")
+            except (subprocess.CalledProcessError, OSError) as e:
+                self.logger.warning(f"rcedit failed: {e}")
+                self.logger.warning(f"Task Manager may show 'Python' instead of '{app_name}'")
+        else:
+            self.logger.warning("rcedit not available, VERSIONINFO not modified")
+            self.logger.warning(f"Task Manager may show 'Python' instead of '{app_name}'")
+
+    def _get_rcedit(self) -> Optional[Path]:
+        """获取 rcedit 可执行文件路径，不存在则下载缓存"""
+        from ..core.cache import CacheManager
+
+        cache_manager = CacheManager()
+        tools_dir = cache_manager.cache_dir / "tools"
+        rcedit_dir = tools_dir / f"rcedit-v{self.RCEDIT_VERSION}"
+        rcedit_exe = rcedit_dir / "rcedit.exe"
+
+        # 已存在则验证是否可用
+        if rcedit_exe.exists():
+            try:
+                result = subprocess.run(
+                    [str(rcedit_exe), "--help"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                return rcedit_exe
+            except (OSError, subprocess.TimeoutExpired):
+                self.logger.warning(f"Existing rcedit is not usable, re-downloading...")
+                shutil.rmtree(rcedit_dir, ignore_errors=True)
+
+        # 下载 rcedit
+        self.logger.info(f"Downloading rcedit v{self.RCEDIT_VERSION}...")
+        try:
+            import urllib.request
+            import tempfile
+
+            url = self.RCEDIT_URL.format(version=self.RCEDIT_VERSION)
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
+                urllib.request.urlretrieve(url, tmp_zip.name)
+                tmp_zip_path = tmp_zip.name
+
+            rcedit_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(tmp_zip_path, "r") as zf:
+                zf.extractall(rcedit_dir)
+
+            Path(tmp_zip_path).unlink(missing_ok=True)
+
+            if rcedit_exe.exists():
+                self.logger.success(f"rcedit downloaded to {rcedit_dir}")
+                return rcedit_exe
+            else:
+                self.logger.warning("rcedit.exe not found in downloaded archive")
+                return None
+        except Exception as e:
+            self.logger.warning(f"Failed to download rcedit: {e}")
+            return None
+
     def _fix_pth_file(self, runtime_dir: Path, version_dir: str, python_version: str = "3.10") -> None:
         """修改 Embeddable Python 的 _pth 文件以支持自定义导入路径"""
         pth_files = list(runtime_dir.glob("python*._pth"))
@@ -438,6 +552,7 @@ import site
             "app_stub.res",
             "build.bat",
             "WebView2.h",       # 编译时头文件，不需要分发
+            "app_icon.ico",     # 编译时图标资源，已嵌入 exe
         }
 
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -467,11 +582,22 @@ import site
 
         jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
 
+        # 处理图标：复制到 bundle 目录供 .rc 编译使用
+        icon_resource = ""
+        icon_str = self.get_icon(config, "windows")
+        if icon_str:
+            icon_candidate = project_dir / icon_str
+            if icon_candidate.exists():
+                icon_dst = bundle_dir / "app_icon.ico"
+                shutil.copy2(icon_candidate, icon_dst)
+                icon_resource = "app_icon.ico"
+
         template_vars = {
             "app_name": app_name,
             "app_module": app_module,
             "version": version,
             "port": port,
+            "icon_resource": icon_resource,
         }
 
         # 渲染模板

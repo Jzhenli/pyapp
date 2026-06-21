@@ -4,6 +4,10 @@
 #define APP_NAME "{{ app_name }}"
 #define APP_VERSION "{{ version }}"
 
+{% if icon_resource %}
+1 ICON "{{ icon_resource }}"
+{% endif %}
+
 1 VERSIONINFO
 FILEVERSION 1,0,0,0
 PRODUCTVERSION 1,0,0,0

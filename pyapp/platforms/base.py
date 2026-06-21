@@ -524,6 +524,10 @@ class BasePlatform(ABC):
         """获取应用端口"""
         return config.get("tool", {}).get("pyapp", {}).get("port", 18080)
 
+    def get_icon(self, config: Dict[str, Any], platform: str = "windows") -> str:
+        """获取应用图标路径（从平台配置中读取）"""
+        return config.get("tool", {}).get("pyapp", {}).get(platform, {}).get("icon", "")
+
     def ensure_dist_dir(self, project_dir: Path) -> Path:
         """确保 dist 目录存在"""
         dist_dir = project_dir / "dist"
