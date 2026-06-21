@@ -1,11 +1,11 @@
-"""Windows 平台实现"""
+"""Windows 平台实现 (Parent-Child Process + WebView2)"""
 
 import os
 import shutil
 import subprocess
 import zipfile
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from .base import BasePlatform, BuildResult
 from ..core.logger import get_logger
@@ -13,38 +13,34 @@ from ..core.errors import BuildError, PyAppEnvironmentError
 
 
 class WindowsPlatform(BasePlatform):
-    """Windows 平台"""
+    """Windows 平台 (Embeddable Python + Stub + WebView2)"""
 
     name = "windows"
-    description = "Windows 平台 (Embeddable Python + Stub)"
+    description = "Windows 平台 (Embeddable Python + Stub + WebView2)"
+
+    # WebView2 SDK 版本（用于下载 WebView2Loader.dll）
+    # 更新此版本时需验证 NuGet 包内 x64 DLL 路径未变
+    WEBVIEW2_SDK_VERSION = "1.0.2792.45"
 
     def check_environment(self) -> tuple:
         """检查 Windows 开发环境"""
         missing = []
 
-        # 检查 gcc (MinGW-w64) - 仅编译 Stub 时需要
+        # 检查 g++ (MinGW-w64) - 编译 C++ Stub 需要
         try:
             result = subprocess.run(
-                ["gcc", "--version"],
+                ["g++", "--version"],
                 capture_output=True, text=True
             )
             if result.returncode != 0:
-                missing.append("MinGW-w64 not found. Run 'pyapp setup windows'")
+                missing.append("MinGW-w64 (g++) not found. Run 'pyapp setup windows'")
         except FileNotFoundError:
-            missing.append("MinGW-w64 not found. Run 'pyapp setup windows'")
+            missing.append("MinGW-w64 (g++) not found. Run 'pyapp setup windows'")
 
         return len(missing) == 0, missing
 
     def create(self, project_dir: Path, config: Dict[str, Any]) -> None:
-        """创建 Windows 项目结构（Stub 源码）"""
-        from jinja2 import Environment, FileSystemLoader
-
-        app_name = self.get_app_name(config)
-        app_module = self.get_app_module(config)
-        version = self.get_app_version(config)
-        port = self.get_port(config)
-
-        template_dir = Path(__file__).parent.parent / "templates" / "shells" / "windows"
+        """创建 Windows 项目结构（Stub 源码 + 配置文件）"""
         bundle_dir = project_dir / "bundles" / "windows"
 
         if bundle_dir.exists():
@@ -52,20 +48,7 @@ class WindowsPlatform(BasePlatform):
         else:
             self.logger.info(f"Creating Windows project at {bundle_dir}...")
 
-        # Jinja2 渲染
-        jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
-
-        template_vars = {
-            "app_name": app_name,
-            "app_module": app_module,
-            "version": version,
-            "port": port,
-        }
-
-        # 渲染 Stub 源码
-        self._render_template(jinja_env, "app_stub.c.j2", bundle_dir / "app_stub.c", template_vars)
-        self._render_template(jinja_env, "app_stub.rc.j2", bundle_dir / "app_stub.rc", template_vars)
-        self._render_template(jinja_env, "build.bat.j2", bundle_dir / "build.bat", template_vars)
+        self._render_all_templates(project_dir, config)
 
         self.logger.success(f"Windows project created at {bundle_dir}")
 
@@ -75,7 +58,6 @@ class WindowsPlatform(BasePlatform):
             # 1. 检查环境
             ok, missing = self.check_environment()
             if not ok:
-                # Stub 编译可选，给出警告
                 self.logger.warning(f"Missing: {', '.join(missing)}")
                 self.logger.warning("Stub compilation will be skipped")
 
@@ -104,7 +86,7 @@ class WindowsPlatform(BasePlatform):
                 self._rmtree_safe(current_version_path)
 
             # 3. 下载 Embeddable Python
-            self.logger.step(1, 6, "Downloading Python runtime")
+            self.logger.step(1, 8, "Downloading Python runtime")
             from ..core.runtime import RuntimeManager
             runtime_manager = RuntimeManager()
             runtime_dir = bundle_dir / "runtime"
@@ -114,26 +96,30 @@ class WindowsPlatform(BasePlatform):
             self._fix_pth_file(runtime_dir, version_dir, python_version)
 
             # 4. 同步 Python 源码
-            self.logger.step(2, 6, "Syncing Python source code")
+            self.logger.step(2, 8, "Syncing Python source code")
             self.sync_source_code(project_dir, "windows", config)
 
             # 5. 同步前端资源
-            self.logger.step(3, 6, "Syncing frontend resources")
+            self.logger.step(3, 8, "Syncing frontend resources")
             self.sync_frontend_dist(project_dir, "windows", config)
 
             # 6. 安装依赖
-            self.logger.step(4, 6, "Installing dependencies")
+            self.logger.step(4, 8, "Installing dependencies")
             self.install_dependencies(project_dir, config, "windows")
 
             # 7. 编译 Stub（可选）
-            self.logger.step(5, 6, "Compiling Stub")
+            self.logger.step(5, 8, "Compiling Stub")
             exe_path = self._compile_stub(bundle_dir, app_name)
             if not exe_path:
                 # 创建启动脚本替代
-                exe_path = self._create_launch_script(bundle_dir, app_name, app_module, version_dir)
+                exe_path = self._create_launch_script(bundle_dir, app_name, app_module, version_dir, config)
+
+            # 7.5 下载 WebView2Loader.dll（UI 模式需要）
+            self.logger.step(6, 8, "Downloading WebView2Loader.dll")
+            self._download_webview2_loader(bundle_dir)
 
             # 8. 打包 ZIP
-            self.logger.step(6, 6, "Packaging ZIP")
+            self.logger.step(7, 8, "Packaging ZIP")
             dist_dir = self.ensure_dist_dir(project_dir)
             zip_filename = f"{app_name}-{version}-windows-x86_64.zip"
             zip_path = dist_dir / zip_filename
@@ -200,8 +186,13 @@ class WindowsPlatform(BasePlatform):
         if not result.success:
             return
 
-        # 启动应用
-        self.run(project_dir, config)
+        # 启动应用（使用 --console 模式方便开发调试）
+        exe_path = project_dir / "bundles" / "windows" / f"{app_name}.exe"
+        if exe_path.exists():
+            subprocess.Popen([str(exe_path), "--console"], cwd=str(exe_path.parent))
+            self.logger.info(f"Started {exe_path} --console")
+        else:
+            self.run(project_dir, config)
 
         # 启动文件监听
         src_dir = project_dir / "src"
@@ -248,12 +239,12 @@ class WindowsPlatform(BasePlatform):
         self.logger.info("Release package created (unsigned)")
         return result
 
-    def _compile_stub(self, bundle_dir: Path, app_name: str) -> Path:
-        """编译 Windows Stub"""
-        stub_c = bundle_dir / "app_stub.c"
+    def _compile_stub(self, bundle_dir: Path, app_name: str) -> Optional[Path]:
+        """编译 Windows Stub (C++ with WebView2)"""
+        stub_cpp = bundle_dir / "app_stub.cpp"
         stub_rc = bundle_dir / "app_stub.rc"
 
-        if not stub_c.exists():
+        if not stub_cpp.exists():
             return None
 
         try:
@@ -265,12 +256,13 @@ class WindowsPlatform(BasePlatform):
                     capture_output=True, check=True,
                 )
 
-            # 编译 Stub
+            # 编译 Stub (C++)
             exe_path = bundle_dir / f"{app_name}.exe"
             cmd = [
-                "gcc", "-o", str(exe_path),
-                str(stub_c),
-                "-mwindows", "-O2",
+                "g++", "-o", str(exe_path),
+                str(stub_cpp),
+                "-mwindows", "-O2", "-s",
+                "-lwinhttp", "-lole32", "-loleaut32", "-lshell32", "-lgdi32", "-lws2_32",
             ]
             if stub_res.exists():
                 cmd.append(str(stub_res))
@@ -287,19 +279,102 @@ class WindowsPlatform(BasePlatform):
             self.logger.warning(f"Stub compilation skipped: {e}")
             return None
 
-    def _create_launch_script(self, bundle_dir: Path, app_name: str, app_module: str, version_dir: str) -> Path:
-        """创建启动脚本（替代 Stub）"""
+    def _create_launch_script(self, bundle_dir: Path, app_name: str, app_module: str, version_dir: str, config: Dict[str, Any]) -> Path:
+        """创建启动脚本（替代 Stub，当编译失败时使用）"""
+        port = self.get_port(config)
         script_path = bundle_dir / f"{app_name}.bat"
         script_content = f'''@echo off
 cd /d "%~dp0"
 set PATH=runtime;runtime\\Scripts;%PATH%
 set PYTHONPATH={version_dir}\\app;{version_dir}\\app_packages;%PYTHONPATH%
+set APP_MODE=production
+set APP_PORT={port}
 python -m {app_module}
 pause
 '''
         script_path.write_text(script_content, encoding="utf-8")
         self.logger.info(f"Launch script created: {script_path}")
         return script_path
+
+    def _download_webview2_loader(self, bundle_dir: Path) -> None:
+        """下载 WebView2Loader.dll（UI 模式运行时依赖）
+
+        WebView2Loader.dll 是 Microsoft WebView2 SDK 的一部分，
+        用于在运行时加载系统已安装的 WebView2 Runtime。
+        它很小（约 150KB），需要放在 exe 同目录。
+        """
+        import urllib.request
+        import tempfile
+        from ..core.cache import CacheManager
+
+        target_path = bundle_dir / "WebView2Loader.dll"
+
+        # 已存在则跳过
+        if target_path.exists() and target_path.stat().st_size > 0:
+            self.logger.info(f"WebView2Loader.dll already exists at {target_path}")
+            return
+
+        # 从缓存查找
+        cache_manager = CacheManager()
+        cached = cache_manager.get("webview2-loader-x64")
+        if cached and cached.exists():
+            shutil.copy2(cached, target_path)
+            self.logger.success(f"WebView2Loader.dll restored from cache")
+            return
+
+        # 下载 WebView2Loader.dll
+        # 来源: Microsoft WebView2 SDK NuGet 包 (x64)
+        # 该 DLL 是 BSD-3-Clause 许可的自由分发文件
+        loader_url = f"https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/{self.WEBVIEW2_SDK_VERSION}"
+
+        self.logger.info(f"Downloading WebView2Loader.dll...")
+
+        try:
+            # 下载 NuGet 包（本质是 zip 文件）
+            tmp_zip_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
+                    urllib.request.urlretrieve(loader_url, tmp_zip.name)
+                    tmp_zip_path = tmp_zip.name
+
+                # 从 NuGet 包中提取 WebView2Loader.dll
+                with zipfile.ZipFile(tmp_zip_path, "r") as zf:
+                    # 收集所有 WebView2Loader.dll 条目，优先选择 x64 版本
+                    dll_entries = [
+                        n for n in zf.namelist()
+                        if n.endswith("WebView2Loader.dll")
+                    ]
+
+                    # 优先选择 x64 版本
+                    best = None
+                    for entry in dll_entries:
+                        if "x64" in entry:
+                            best = entry
+                            break
+                    if not best and dll_entries:
+                        best = dll_entries[0]
+
+                    if best:
+                        with zf.open(best) as src, open(target_path, "wb") as dst:
+                            dst.write(src.read())
+
+                        self.logger.success(f"WebView2Loader.dll extracted ({target_path.stat().st_size} bytes)")
+
+                        # 缓存（复制到缓存目录，不移动原文件）
+                        cache_dir = cache_manager.packages_dir
+                        cache_path = cache_dir / "WebView2Loader.dll"
+                        shutil.copy2(target_path, cache_path)
+                        cache_manager.register("webview2-loader-x64", cache_path)
+                    else:
+                        self.logger.warning("WebView2Loader.dll not found in NuGet package")
+            finally:
+                # 清理临时文件（无论成功或异常）
+                if tmp_zip_path:
+                    Path(tmp_zip_path).unlink(missing_ok=True)
+
+        except Exception as e:
+            self.logger.warning(f"Failed to download WebView2Loader.dll: {e}")
+            self.logger.warning("UI mode will not work. Install WebView2 SDK manually or use --console mode.")
 
     def _rmtree_safe(self, path: Path) -> None:
         """安全删除目录，处理 Windows 文件锁定问题"""
@@ -308,13 +383,10 @@ pause
 
         def on_rm_error(func, path_str, exc_info):
             """处理删除错误"""
-            path_obj = Path(path_str)
-            # 尝试移除只读属性
             try:
                 os.chmod(path_str, stat.S_IWRITE)
                 func(path_str)
             except Exception:
-                # 如果还是失败，等待后重试
                 time.sleep(0.5)
                 try:
                     func(path_str)
@@ -334,7 +406,6 @@ pause
 
     def _fix_pth_file(self, runtime_dir: Path, version_dir: str, python_version: str = "3.10") -> None:
         """修改 Embeddable Python 的 _pth 文件以支持自定义导入路径"""
-        # 查找 _pth 文件
         pth_files = list(runtime_dir.glob("python*._pth"))
         if not pth_files:
             self.logger.warning("No _pth file found in runtime")
@@ -343,11 +414,9 @@ pause
         pth_file = pth_files[0]
         self.logger.info(f"Fixing _pth file: {pth_file}")
 
-        # 根据实际 Python 版本生成 zip 文件名
         ver_tag = python_version.replace(".", "")[:3]  # "3.10" -> "310", "3.11" -> "311"
         zip_name = f"python{ver_tag}.zip"
 
-        # 写入新的内容
         content = f"""{zip_name}
 .
 
@@ -362,19 +431,18 @@ import site
         self.logger.success(f"Updated {pth_file.name} with custom import paths")
 
     def _create_zip(self, source_dir: Path, zip_path: Path):
-        """创建 ZIP 包，排除编译源文件"""
-        # 排除的文件列表（编译相关的源文件）
+        """创建 ZIP 包，排除编译源文件和 WebView2 头文件"""
         exclude_files = {
-            "app_stub.c",
-            "app_stub.rc", 
+            "app_stub.cpp",
+            "app_stub.rc",
             "app_stub.res",
             "build.bat",
+            "WebView2.h",       # 编译时头文件，不需要分发
         }
-        
+
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file_path in source_dir.rglob("*"):
                 if file_path.is_file():
-                    # 排除编译源文件
                     if file_path.name in exclude_files:
                         continue
                     arcname = file_path.relative_to(source_dir)
@@ -382,6 +450,10 @@ import site
 
     def _update_stub_sources(self, project_dir: Path, config: Dict[str, Any]) -> None:
         """更新 Stub 源码（确保版本号正确）"""
+        self._render_all_templates(project_dir, config)
+
+    def _render_all_templates(self, project_dir: Path, config: Dict[str, Any]) -> None:
+        """渲染所有 Jinja2 模板并复制静态资源"""
         from jinja2 import Environment, FileSystemLoader
 
         app_name = self.get_app_name(config)
@@ -393,7 +465,6 @@ import site
         bundle_dir = project_dir / "bundles" / "windows"
         bundle_dir.mkdir(parents=True, exist_ok=True)
 
-        # Jinja2 渲染
         jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
 
         template_vars = {
@@ -403,10 +474,17 @@ import site
             "port": port,
         }
 
-        # 渲染 Stub 源码
-        self._render_template(jinja_env, "app_stub.c.j2", bundle_dir / "app_stub.c", template_vars)
+        # 渲染模板
+        self._render_template(jinja_env, "app_stub.cpp.j2", bundle_dir / "app_stub.cpp", template_vars)
         self._render_template(jinja_env, "app_stub.rc.j2", bundle_dir / "app_stub.rc", template_vars)
         self._render_template(jinja_env, "build.bat.j2", bundle_dir / "build.bat", template_vars)
+        self._render_template(jinja_env, "app.ini.j2", bundle_dir / "app.ini", template_vars)
+
+        # 复制 WebView2 头文件（非模板，直接复制，总是覆盖以保持最新）
+        webview2_h_src = template_dir / "WebView2.h"
+        webview2_h_dst = bundle_dir / "WebView2.h"
+        if webview2_h_src.exists():
+            shutil.copy2(webview2_h_src, webview2_h_dst)
 
     def _get_run_env(self, bundle_dir: Path, version_dir: str = "app") -> dict:
         """获取运行环境变量"""
@@ -415,7 +493,6 @@ import site
         app_packages_dir = bundle_dir / version_dir / "app_packages"
         app_dir = bundle_dir / version_dir / "app"
 
-        # 添加到 PATH
         path_sep = ";" if os.name == "nt" else ":"
         env["PATH"] = f"{runtime_dir}{path_sep}{runtime_dir / 'Scripts'}{path_sep}{env.get('PATH', '')}"
         env["PYTHONPATH"] = f"{app_dir}{path_sep}{app_packages_dir}{path_sep}{env.get('PYTHONPATH', '')}"

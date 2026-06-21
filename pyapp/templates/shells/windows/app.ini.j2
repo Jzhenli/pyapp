@@ -1,0 +1,36 @@
+; {{ app_name }} Configuration File
+; This file is read by the application launcher at startup.
+; Command line arguments override settings in this file.
+
+[launch]
+; Launch mode: ui / console / headless
+;   ui       - WebView2 window (default)
+;   console  - Terminal window
+;   headless - No window (background service)
+mode = ui
+
+[ui]
+; Window title
+title = {{ app_name }}
+; Window size
+width = 1280
+height = 800
+; Allow window resizing (1=yes, 0=no)
+resizable = 1
+; URL path to load after server is ready
+start_path = /
+; Close button behavior: exit / minimize
+;   exit      - Quit application when window is closed (default)
+;   minimize  - Minimize to system tray (requires show_tray=1)
+close_action = exit
+; Show system tray icon (1=yes, 0=no)
+; Required for close_action=minimize to work properly
+show_tray = 0
+
+[console]
+; Pause before exiting console (1=yes, 0=no)
+pause_on_exit = 1
+
+[server]
+; FastAPI service port
+port = {{ port }}
