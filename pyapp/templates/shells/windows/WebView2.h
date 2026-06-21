@@ -296,6 +296,48 @@ public:
         BOOL isEnabled) = 0;
 };
 
+// ===== Extended Controller interfaces for DPI support =====
+
+// COREWEBVIEW2_BOUNDS_MODE
+typedef enum COREWEBVIEW2_BOUNDS_MODE {
+    COREWEBVIEW2_BOUNDS_MODE_USE_RAW_BOUNDS = 0,
+    COREWEBVIEW2_BOUNDS_MODE_USE_RASTERIZATION_SCALE = 1,
+} COREWEBVIEW2_BOUNDS_MODE;
+
+// {4A0E9E78-8260-4F4C-A0ED-CC1D323A8EBA}
+DEFINE_GUID(IID_ICoreWebView2Controller2,
+    0x4A0E9E78, 0x8260, 0x4F4C, 0xA0, 0xED, 0xCC, 0x1D, 0x32, 0x3A, 0x8E, 0xBA);
+
+// {3B026E5E-0A1E-4B54-95D5-1E51D6E7E8B0}
+DEFINE_GUID(IID_ICoreWebView2Controller3,
+    0x3B026E5E, 0x0A1E, 0x4B54, 0x95, 0xD5, 0x1E, 0x51, 0xD6, 0xE7, 0xE8, 0xB0);
+
+class ICoreWebView2Controller2 : public ICoreWebView2Controller
+{
+public:
+    virtual HRESULT STDMETHODCALLTYPE get_DefaultBackgroundColor(
+        void *color) = 0;
+    virtual HRESULT STDMETHODCALLTYPE put_DefaultBackgroundColor(
+        void *color) = 0;
+};
+
+class ICoreWebView2Controller3 : public ICoreWebView2Controller2
+{
+public:
+    virtual HRESULT STDMETHODCALLTYPE get_RasterizationScale(
+        double *scale) = 0;
+    virtual HRESULT STDMETHODCALLTYPE put_RasterizationScale(
+        double scale) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_BoundsMode(
+        COREWEBVIEW2_BOUNDS_MODE *boundsMode) = 0;
+    virtual HRESULT STDMETHODCALLTYPE put_BoundsMode(
+        COREWEBVIEW2_BOUNDS_MODE boundsMode) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_ShouldDetectMonitorScaleChanges(
+        BOOL *value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE put_ShouldDetectMonitorScaleChanges(
+        BOOL value) = 0;
+};
+
 // ===== Factory function type (for runtime dynamic loading) =====
 
 typedef HRESULT (WINAPI *PFNCreateCoreWebView2EnvironmentWithOptions)(

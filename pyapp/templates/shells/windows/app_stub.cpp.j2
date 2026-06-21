@@ -86,6 +86,7 @@ static bool g_navigated = false;     // flag: app URL has been navigated
 static HMODULE g_hWebView2Dll = NULL;
 static ICoreWebView2Controller *g_webviewController = nullptr;
 static ICoreWebView2 *g_webview = nullptr;
+static ICoreWebView2Controller3 *g_webviewController3 = nullptr;
 static bool g_webviewReady = false;
 
 // Tray icon globals
@@ -523,11 +524,65 @@ static void show_tray_menu(HWND hwnd) {
 
 // ========== WebView2 Integration ==========
 
+// Get the DPI scale factor for the monitor that the window is on
+static double get_dpi_scale(HWND hwnd) {
+    HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (!hMonitor) return 1.0;
+
+    // Try GetDpiForMonitor (Windows 8.1+, exported from shcore.dll)
+    HMODULE hShcore = LoadLibraryExA("shcore.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (hShcore) {
+        typedef HRESULT (WINAPI *PFN_GetDpiForMonitor)(HMONITOR, int, UINT*, UINT*);
+        auto pfn = (PFN_GetDpiForMonitor)GetProcAddress(hShcore, "GetDpiForMonitor");
+        if (pfn) {
+            UINT dpiX = 96, dpiY = 96;
+            // MDT_EFFECTIVE_DPI = 0
+            if (SUCCEEDED(pfn(hMonitor, 0, &dpiX, &dpiY))) {
+                FreeLibrary(hShcore);
+                return (double)dpiX / 96.0;
+            }
+        }
+        FreeLibrary(hShcore);
+    }
+
+    // Fallback: GetDpiForWindow (Windows 10 1607+, in user32.dll)
+    HMODULE hUser32 = GetModuleHandleA("user32.dll");
+    if (hUser32) {
+        typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
+        auto pfn = (PFN_GetDpiForWindow)GetProcAddress(hUser32, "GetDpiForWindow");
+        if (pfn) {
+            UINT dpi = pfn(hwnd);
+            return (double)dpi / 96.0;
+        }
+    }
+
+    return 1.0;
+}
+
+// Update WebView2 rasterization scale for current DPI
+static void update_webview_dpi() {
+    if (!g_webviewController3 || !g_hWnd) return;
+
+    double scale = get_dpi_scale(g_hWnd);
+    g_webviewController3->put_RasterizationScale(scale);
+
+    // Resize with raw (physical pixel) bounds
+    RECT bounds;
+    GetClientRect(g_hWnd, &bounds);
+    g_webviewController->put_Bounds(bounds);
+}
+
 static void resize_webview() {
     if (g_webviewController && g_hWnd) {
-        RECT bounds;
-        GetClientRect(g_hWnd, &bounds);
-        g_webviewController->put_Bounds(bounds);
+        if (g_webviewController3) {
+            // DPI-aware: update scale and use raw bounds
+            update_webview_dpi();
+        } else {
+            // Fallback: no DPI awareness
+            RECT bounds;
+            GetClientRect(g_hWnd, &bounds);
+            g_webviewController->put_Bounds(bounds);
+        }
     }
 }
 
@@ -570,10 +625,21 @@ public:
             settings->put_AreDefaultScriptDialogsEnabled(TRUE);
             settings->put_IsStatusBarEnabled(FALSE);
             settings->put_AreDevToolsEnabled(FALSE);
+            settings->put_IsZoomControlEnabled(FALSE);  // Disable Ctrl+wheel/pinch zoom
             settings->Release();
         }
 
-        // Resize WebView to fill the window
+        // Try to get ICoreWebView2Controller3 for DPI-aware rendering
+        if (SUCCEEDED(controller->QueryInterface(IID_ICoreWebView2Controller3,
+                                                  (void**)&g_webviewController3))) {
+            // One-time DPI configuration
+            g_webviewController3->put_BoundsMode(COREWEBVIEW2_BOUNDS_MODE_USE_RAW_BOUNDS);
+            g_webviewController3->put_ShouldDetectMonitorScaleChanges(TRUE);
+        } else {
+            g_webviewController3 = nullptr;
+        }
+
+        // Resize WebView to fill the window (with DPI handling)
         resize_webview();
 
         // Show loading page immediately (server may not be ready yet)
@@ -749,6 +815,10 @@ static void destroy_webview() {
         g_webview->Release();
         g_webview = nullptr;
     }
+    if (g_webviewController3) {
+        g_webviewController3->Release();
+        g_webviewController3 = nullptr;
+    }
     if (g_webviewController) {
         g_webviewController->Close();
         g_webviewController->Release();
@@ -774,6 +844,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             }
         }
         resize_webview();
+        return 0;
+
+    case WM_DPICHANGED:
+        // Window moved to a monitor with different DPI
+        // Always apply the system-suggested rect (required for Per-Monitor V2)
+        {
+            RECT *suggestedRect = (RECT *)lParam;
+            SetWindowPos(hwnd, NULL,
+                suggestedRect->left, suggestedRect->top,
+                suggestedRect->right - suggestedRect->left,
+                suggestedRect->bottom - suggestedRect->top,
+                SWP_NOZORDER | SWP_NOACTIVATE);
+            resize_webview();
+        }
         return 0;
 
     case WM_CLOSE:
@@ -1078,6 +1162,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     config_set_defaults(&g_cfg);
     config_parse_ini(g_exeDir, &g_cfg);
     config_parse_args(&g_cfg);
+
+    // 3.5 Enable Per-Monitor DPI Awareness V2 (before creating any window)
+    // This ensures the app renders crisply on high-DPI displays.
+    {
+        HMODULE hUser32 = GetModuleHandleA("user32.dll");
+        if (hUser32) {
+            typedef BOOL (WINAPI *PFN_SetProcessDpiAwarenessContext)(HANDLE);
+            auto pfn = (PFN_SetProcessDpiAwarenessContext)GetProcAddress(
+                hUser32, "SetProcessDpiAwarenessContext");
+            if (pfn) {
+                // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ((DPI_CONTEXT_HANDLE)-4)
+                pfn((HANDLE)-4);
+            }
+        }
+    }
 
     // 4. Initialize COM (needed for WebView2)
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
