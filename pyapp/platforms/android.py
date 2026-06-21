@@ -135,21 +135,21 @@ class AndroidPlatform(BasePlatform):
         # 创建资源目录和文件
         res_dir = manifest_dir / "res"
 
-        # mipmap-anydpi-v26 (自适应图标)
-        mipmap_dir = res_dir / "mipmap-anydpi-v26"
-        mipmap_dir.mkdir(parents=True, exist_ok=True)
-        for icon_file in ["ic_launcher.xml", "ic_launcher_round.xml"]:
-            src = template_dir / "app/src/main/res/mipmap-anydpi-v26" / icon_file
-            dst = mipmap_dir / icon_file
-            if src.exists() and not dst.exists():
-                shutil.copy2(src, dst)
+        # 处理自定义图标
+        icon_base = self.get_icon(config, "android")
+        icon_source_dir = project_dir / icon_base if icon_base else None
+        has_custom_icons = icon_source_dir and any(icon_source_dir.parent.glob(f"{icon_source_dir.name}-*.png"))
 
-        # drawable
-        drawable_dir = res_dir / "drawable"
-        drawable_dir.mkdir(parents=True, exist_ok=True)
-        drawable_src = template_dir / "app/src/main/res/drawable/ic_launcher_foreground.xml"
-        if drawable_src.exists():
-            shutil.copy2(drawable_src, drawable_dir / "ic_launcher_foreground.xml")
+        if has_custom_icons:
+            self._install_custom_icons(res_dir, icon_source_dir)
+        else:
+            if icon_base:
+                self.logger.warning(
+                    f"Icon configured as '{icon_base}' but no matching PNG files found, "
+                    f"using default icons"
+                )
+            # 使用默认模板图标
+            self._install_default_icons(res_dir, template_dir)
 
         # values
         values_dir = res_dir / "values"
@@ -326,7 +326,10 @@ class AndroidPlatform(BasePlatform):
                 raise BuildError("APK not found after build")
 
             apk_path = apk_files[0]
-            dest_apk = dist_dir / f"{app_name}-{version}.apk"
+            # 文件名格式: {app_name}-{version}-android-{arch}.apk
+            # 多架构时用下划线连接，如 arm64_v8a_armeabi_v7a
+            arch_suffix = "_".join(a.replace("-", "_") for a in abi_filters)
+            dest_apk = dist_dir / f"{app_name}-{version}-android-{arch_suffix}.apk"
             shutil.copy2(apk_path, dest_apk)
 
             self.logger.step(6, 6, "Build complete")
@@ -353,9 +356,26 @@ class AndroidPlatform(BasePlatform):
             "package_name", f"com.example.{app_module.replace('_', '')}"
         )
 
-        # 查找 APK
-        apk_path = project_dir / "dist" / f"{app_name}-{version}.apk"
-        if not apk_path.exists():
+        # 查找 APK（按新命名格式查找，回退到旧格式）
+        dist_dir = project_dir / "dist"
+        apk_path = None
+        if dist_dir.exists():
+            # 优先按架构精确查找新格式: {app_name}-{version}-android-{arch}.apk
+            android_config = config.get("tool", {}).get("pyapp", {}).get("android", {})
+            abi_filters = android_config.get("abi_filters", ["arm64-v8a"])
+            arch_suffix = "_".join(a.replace("-", "_") for a in abi_filters)
+            specific_apk = dist_dir / f"{app_name}-{version}-android-{arch_suffix}.apk"
+            if specific_apk.exists():
+                apk_path = specific_apk
+            else:
+                # 查找任意新格式 APK
+                apk_files = sorted(dist_dir.glob(f"{app_name}-{version}-android-*.apk"))
+                if apk_files:
+                    apk_path = apk_files[-1]
+                # 回退旧格式: {app_name}-{version}.apk
+                elif (dist_dir / f"{app_name}-{version}.apk").exists():
+                    apk_path = dist_dir / f"{app_name}-{version}.apk"
+        if not apk_path or not apk_path.exists():
             # 尝试构建
             self.logger.info("APK not found, building first...")
             result = self.build(project_dir, config)
@@ -1273,3 +1293,103 @@ def get_status() -> dict:
                 "zipStorePath=wrapper/dists\n",
                 encoding="utf-8"
             )
+
+    # 图标尺寸到 Android 密度目录的映射（方形和圆形图标共用）
+    _LAUNCHER_DENSITY_MAP = {
+        48: "mipmap-mdpi",
+        72: "mipmap-hdpi",
+        96: "mipmap-xhdpi",
+        144: "mipmap-xxhdpi",
+        192: "mipmap-xxxhdpi",
+    }
+
+    _ADAPTIVE_DENSITY_MAP = {
+        108: "drawable-mdpi",
+        162: "drawable-hdpi",
+        216: "drawable-xhdpi",
+        324: "drawable-xxhdpi",
+        432: "drawable-xxxhdpi",
+    }
+
+    def _install_custom_icons(self, res_dir: Path, icon_source_dir: Path) -> None:
+        """安装用户自定义图标（Briefcase 风格命名约定）
+
+        图标文件命名格式: {name}-{type}-{size}.png
+        - square: 方形图标 → mipmap-{density}/ic_launcher.png
+        - round: 圆形图标 → mipmap-{density}/ic_launcher_round.png
+        - adaptive: 自适应图标前景层 → drawable-{density}/ic_launcher_foreground.png
+
+        Args:
+            res_dir: Android res/ 目录
+            icon_source_dir: 图标基础路径（如 icons/android/xplay），
+                             实际文件为 icons/android/xplay-square-48.png 等
+        """
+        icon_name = icon_source_dir.name  # e.g. "xplay"
+        icon_dir = icon_source_dir.parent  # e.g. "icons/android/"
+
+        installed = 0
+
+        # 安装方形图标 → mipmap-{density}/ic_launcher.png
+        for size, density_dir in self._LAUNCHER_DENSITY_MAP.items():
+            src = icon_dir / f"{icon_name}-square-{size}.png"
+            if src.exists():
+                dst_dir = res_dir / density_dir
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst_dir / "ic_launcher.png")
+                installed += 1
+
+        # 安装圆形图标 → mipmap-{density}/ic_launcher_round.png
+        for size, density_dir in self._LAUNCHER_DENSITY_MAP.items():
+            src = icon_dir / f"{icon_name}-round-{size}.png"
+            if src.exists():
+                dst_dir = res_dir / density_dir
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst_dir / "ic_launcher_round.png")
+                installed += 1
+
+        # 安装自适应图标前景层 → drawable-{density}/ic_launcher_foreground.png
+        has_adaptive = False
+        for size, density_dir in self._ADAPTIVE_DENSITY_MAP.items():
+            src = icon_dir / f"{icon_name}-adaptive-{size}.png"
+            if src.exists():
+                dst_dir = res_dir / density_dir
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst_dir / "ic_launcher_foreground.png")
+                has_adaptive = True
+                installed += 1
+
+        # 创建自适应图标 XML 定义（API 26+）
+        # 仅在提供了 adaptive 前景层 PNG 时才生成，否则不生成 mipmap-anydpi-v26，
+        # 让系统直接使用 mipmap 中的方形/圆形图标，避免"方中圆"视觉错误
+        if has_adaptive:
+            mipmap_v26_dir = res_dir / "mipmap-anydpi-v26"
+            mipmap_v26_dir.mkdir(parents=True, exist_ok=True)
+
+            adaptive_icon_xml = '''<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background"/>
+    <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+</adaptive-icon>
+'''
+            (mipmap_v26_dir / "ic_launcher.xml").write_text(adaptive_icon_xml, encoding="utf-8")
+            (mipmap_v26_dir / "ic_launcher_round.xml").write_text(adaptive_icon_xml, encoding="utf-8")
+
+        self.logger.success(f"Installed {installed} custom icon files")
+
+    def _install_default_icons(self, res_dir: Path, template_dir: Path) -> None:
+        """安装默认模板图标（矢量图标）"""
+        # mipmap-anydpi-v26 (自适应图标)
+        mipmap_dir = res_dir / "mipmap-anydpi-v26"
+        mipmap_dir.mkdir(parents=True, exist_ok=True)
+        for icon_file in ["ic_launcher.xml", "ic_launcher_round.xml"]:
+            src = template_dir / "app/src/main/res/mipmap-anydpi-v26" / icon_file
+            dst = mipmap_dir / icon_file
+            if src.exists():
+                shutil.copy2(src, dst)
+
+        # drawable
+        drawable_dir = res_dir / "drawable"
+        drawable_dir.mkdir(parents=True, exist_ok=True)
+        drawable_src = template_dir / "app/src/main/res/drawable/ic_launcher_foreground.xml"
+        if drawable_src.exists():
+            shutil.copy2(drawable_src, drawable_dir / "ic_launcher_foreground.xml")
