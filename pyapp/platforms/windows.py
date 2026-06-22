@@ -28,21 +28,24 @@ class WindowsPlatform(BasePlatform):
     RCEDIT_URL = "https://github.com/electron/rcedit/releases/download/v{version}/rcedit-x64.exe"
 
     def check_environment(self) -> tuple:
-        """检查 Windows 开发环境"""
-        missing = []
+        """检查 Windows 开发环境（MinGW）"""
+        if self._check_mingw():
+            self.logger.info("Available compiler: MinGW-w64 (g++)")
+            return True, []
+        else:
+            return False, ["MinGW-w64 (g++) not found. Run 'pyapp setup windows'"]
 
-        # 检查 g++ (MinGW-w64) - 编译 C++ Stub 需要
+    def _check_mingw(self) -> bool:
+        """检查 MinGW 是否可用"""
         try:
             result = subprocess.run(
                 ["g++", "--version"],
-                capture_output=True, text=True
+                capture_output=True,
+                timeout=5,
             )
-            if result.returncode != 0:
-                missing.append("MinGW-w64 (g++) not found. Run 'pyapp setup windows'")
-        except FileNotFoundError:
-            missing.append("MinGW-w64 (g++) not found. Run 'pyapp setup windows'")
-
-        return len(missing) == 0, missing
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
 
     def create(self, project_dir: Path, config: Dict[str, Any]) -> None:
         """创建 Windows 项目结构（Stub 源码 + 配置文件）"""
@@ -262,43 +265,69 @@ class WindowsPlatform(BasePlatform):
         return result
 
     def _compile_stub(self, bundle_dir: Path, app_name: str) -> Optional[Path]:
-        """编译 Windows Stub (C++ with WebView2)"""
+        """编译 Windows Stub（使用 MinGW）"""
         stub_cpp = bundle_dir / "app_stub.cpp"
         stub_rc = bundle_dir / "app_stub.rc"
 
         if not stub_cpp.exists():
             return None
 
+        exe_path = bundle_dir / f"{app_name}.exe"
+
+        # 检查 MinGW 是否可用
+        if not self._check_mingw():
+            self.logger.warning("MinGW-w64 (g++) not found")
+            return None
+
+        self.logger.info("Using MinGW compiler")
+        return self._compile_stub_mingw(bundle_dir, exe_path, stub_cpp, stub_rc)
+
+    def _compile_stub_mingw(self, bundle_dir: Path, exe_path: Path,
+                            stub_cpp: Path, stub_rc: Path) -> Optional[Path]:
+        """使用 MinGW 编译 Stub"""
         try:
             # 编译资源文件
             stub_res = bundle_dir / "app_stub.res"
             if stub_rc.exists():
-                subprocess.run(
+                result = subprocess.run(
                     ["windres", str(stub_rc), "-O", "coff", "-o", str(stub_res)],
-                    capture_output=True, check=True,
+                    capture_output=True, text=True,
                 )
+                if result.returncode != 0:
+                    self.logger.warning(f"Resource compilation failed: {result.stderr}")
+                    stub_res = None
+                else:
+                    # 确保文件确实存在（编译成功但文件可能被意外删除）
+                    if stub_res.exists():
+                        self.logger.info("Resource file compiled")
+                    else:
+                        self.logger.warning(f"Resource file not found after compilation: {stub_res}")
+                        stub_res = None
 
             # 编译 Stub (C++)
-            exe_path = bundle_dir / f"{app_name}.exe"
             cmd = [
                 "g++", "-o", str(exe_path),
                 str(stub_cpp),
                 "-mwindows", "-O2", "-s",
+                "-static-libgcc", "-static-libstdc++",  # 静态链接 GCC 运行时（避免依赖 DLL）
                 "-lwinhttp", "-lole32", "-loleaut32", "-lshell32", "-lgdi32", "-lws2_32",
             ]
-            if stub_res.exists():
+            if stub_res and stub_res.exists():
                 cmd.append(str(stub_res))
 
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
-                self.logger.success(f"Stub compiled: {exe_path}")
+                # 清理中间文件
+                if stub_res and stub_res.exists():
+                    stub_res.unlink(missing_ok=True)
+                self.logger.success(f"Stub compiled with MinGW: {exe_path}")
                 return exe_path
             else:
-                self.logger.warning(f"Stub compilation failed: {result.stderr}")
+                self.logger.warning(f"MinGW compilation failed: {result.stderr}")
                 return None
 
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            self.logger.warning(f"Stub compilation skipped: {e}")
+        except Exception as e:
+            self.logger.warning(f"MinGW compilation failed: {e}")
             return None
 
     def _create_launch_script(self, bundle_dir: Path, app_name: str, app_module: str, version_dir: str, config: Dict[str, Any]) -> Path:

@@ -141,13 +141,13 @@ def setup_windows():
 
     # 检查 MinGW-w64
     try:
-        result = subprocess.run(["gcc", "--version"], capture_output=True, text=True)
-        gcc_found = result.returncode == 0
+        result = subprocess.run(["g++", "--version"], capture_output=True, text=True)
+        gpp_found = result.returncode == 0
     except FileNotFoundError:
-        gcc_found = False
+        gpp_found = False
 
-    if gcc_found:
-        logger.info("MinGW-w64 (gcc) is already installed")
+    if gpp_found:
+        logger.info("MinGW-w64 (g++) is already installed")
     else:
         logger.info("MinGW-w64 not found")
         logger.info("")
