@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import stat
 import subprocess
 import zipfile
 from pathlib import Path
@@ -598,6 +599,14 @@ import site
                 icon_candidate = project_dir / f"{icon_str}.ico"
             if icon_candidate.exists():
                 icon_dst = bundle_dir / "app_icon.ico"
+                # 先删除已存在的目标文件，避免 Windows 文件锁定问题
+                if icon_dst.exists():
+                    try:
+                        # 移除只读属性（Windows 可能从 Git 或其他来源继承此属性）
+                        icon_dst.chmod(stat.S_IWRITE)
+                        icon_dst.unlink()
+                    except OSError as e:
+                        self.logger.warning(f"Could not remove existing icon file: {icon_dst}: {e}")
                 shutil.copy2(icon_candidate, icon_dst)
                 icon_resource = "app_icon.ico"
 
