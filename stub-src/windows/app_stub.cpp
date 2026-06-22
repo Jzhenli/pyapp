@@ -1,5 +1,5 @@
 /**
- * {{ app_name }} - Windows Application Stub (Parent-Child Process + WebView2)
+ * Windows Application Stub (Parent-Child Process + WebView2)
  *
  * Architecture:
  *   app.exe (parent) -> python.exe (child, FastAPI server)
@@ -14,6 +14,7 @@
  *   - WebView2 with auto-fallback to console mode
  *   - System tray support (minimize on close)
  *   - Configuration via app.ini + command line arguments
+ *   - All project-specific values read from app.ini at runtime
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -66,6 +67,9 @@ struct AppConfig {
     int  port;
     char app_module[128];
     char version_dir[256];
+    // Fields for pre-compiled stub (read from app.ini at runtime)
+    char app_name[128];     // Application name (for Mutex, window class, messages)
+    char stub_version[32];  // Stub version for compatibility check
 };
 
 // ========== Global State ==========
@@ -81,6 +85,10 @@ static volatile LONG g_exiting = 0;  // flag: app is shutting down
 static int g_serverWaitCount = 0;    // timer tick count for server wait
 static bool g_serverReady = false;   // flag: server health check passed
 static bool g_navigated = false;     // flag: app URL has been navigated
+
+// Dynamic strings built from app_name
+static char g_mutexName[256];      // "{app_name}-SingleInstance"
+static char g_wndClassName[256];   // "{app_name}WndClass"
 
 // WebView2 globals
 static HMODULE g_hWebView2Dll = NULL;
@@ -98,8 +106,22 @@ static bool g_trayIconCreated = false;
 static void config_set_defaults(AppConfig *cfg) {
     strncpy(cfg->mode, "ui", sizeof(cfg->mode) - 1);
     cfg->mode[sizeof(cfg->mode) - 1] = '\0';
-    strncpy(cfg->title, "{{ app_name }}", sizeof(cfg->title) - 1);
+
+    // Derive app_name from exe filename (strip path and .exe extension)
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    const char *exeName = strrchr(exePath, '\\');
+    exeName = exeName ? exeName + 1 : exePath;
+    strncpy(cfg->app_name, exeName, sizeof(cfg->app_name) - 1);
+    cfg->app_name[sizeof(cfg->app_name) - 1] = '\0';
+    // Strip .exe extension
+    char *dot = strrchr(cfg->app_name, '.');
+    if (dot) *dot = '\0';
+
+    // Title defaults to app_name
+    strncpy(cfg->title, cfg->app_name, sizeof(cfg->title) - 1);
     cfg->title[sizeof(cfg->title) - 1] = '\0';
+
     cfg->width = 1280;
     cfg->height = 800;
     cfg->resizable = 1;
@@ -109,11 +131,23 @@ static void config_set_defaults(AppConfig *cfg) {
     cfg->close_action[sizeof(cfg->close_action) - 1] = '\0';
     cfg->show_tray = 0;
     cfg->pause_on_exit = 1;
-    cfg->port = {{ port }};
-    strncpy(cfg->app_module, "{{ app_module }}", sizeof(cfg->app_module) - 1);
+    cfg->port = 8000;
+
+    // app_module defaults to app_name
+    strncpy(cfg->app_module, cfg->app_name, sizeof(cfg->app_module) - 1);
     cfg->app_module[sizeof(cfg->app_module) - 1] = '\0';
-    strncpy(cfg->version_dir, "{{ app_name }}-{{ version }}", sizeof(cfg->version_dir) - 1);
+
+    // version_dir defaults to app_name (will be overridden by app.ini)
+    strncpy(cfg->version_dir, cfg->app_name, sizeof(cfg->version_dir) - 1);
     cfg->version_dir[sizeof(cfg->version_dir) - 1] = '\0';
+
+    strncpy(cfg->stub_version, "1.0.0", sizeof(cfg->stub_version) - 1);
+    cfg->stub_version[sizeof(cfg->stub_version) - 1] = '\0';
+}
+
+static void config_build_dynamic_strings(AppConfig *cfg) {
+    snprintf(g_mutexName, sizeof(g_mutexName), "%s-SingleInstance", cfg->app_name);
+    snprintf(g_wndClassName, sizeof(g_wndClassName), "%sWndClass", cfg->app_name);
 }
 
 static void config_parse_ini(const char *exeDir, AppConfig *cfg) {
@@ -125,8 +159,35 @@ static void config_parse_ini(const char *exeDir, AppConfig *cfg) {
         return;
     }
 
+    char buf[512];
+
+    // Read [app] section
+    GetPrivateProfileStringA("app", "name", "", buf, sizeof(buf), iniPath);
+    bool appNameFromIni = (buf[0] != '\0');
+    if (appNameFromIni) {
+        strncpy(cfg->app_name, buf, sizeof(cfg->app_name) - 1);
+        cfg->app_name[sizeof(cfg->app_name) - 1] = '\0';
+    }
+
+    GetPrivateProfileStringA("app", "module", "", buf, sizeof(buf), iniPath);
+    if (buf[0]) {
+        strncpy(cfg->app_module, buf, sizeof(cfg->app_module) - 1);
+        cfg->app_module[sizeof(cfg->app_module) - 1] = '\0';
+    }
+
+    GetPrivateProfileStringA("app", "version_dir", "", buf, sizeof(buf), iniPath);
+    if (buf[0]) {
+        strncpy(cfg->version_dir, buf, sizeof(cfg->version_dir) - 1);
+        cfg->version_dir[sizeof(cfg->version_dir) - 1] = '\0';
+    }
+
+    GetPrivateProfileStringA("app", "stub_version", "", buf, sizeof(buf), iniPath);
+    if (buf[0]) {
+        strncpy(cfg->stub_version, buf, sizeof(cfg->stub_version) - 1);
+        cfg->stub_version[sizeof(cfg->stub_version) - 1] = '\0';
+    }
+
     // Read [launch] section
-    char buf[64];
     GetPrivateProfileStringA("launch", "mode", "", buf, sizeof(buf), iniPath);
     if (buf[0]) {
         strncpy(cfg->mode, buf, sizeof(cfg->mode) - 1);
@@ -134,9 +195,17 @@ static void config_parse_ini(const char *exeDir, AppConfig *cfg) {
     }
 
     // Read [ui] section
+    bool titleFromIni = false;
     GetPrivateProfileStringA("ui", "title", "", buf, sizeof(buf), iniPath);
     if (buf[0]) {
         strncpy(cfg->title, buf, sizeof(cfg->title) - 1);
+        cfg->title[sizeof(cfg->title) - 1] = '\0';
+        titleFromIni = true;
+    }
+    // If app_name was overridden from ini but title was not explicitly set,
+    // update title to match the new app_name
+    if (appNameFromIni && !titleFromIni) {
+        strncpy(cfg->title, cfg->app_name, sizeof(cfg->title) - 1);
         cfg->title[sizeof(cfg->title) - 1] = '\0';
     }
 
@@ -182,15 +251,17 @@ static void config_parse_args(AppConfig *cfg) {
         } else if (wcsncmp(argvW[i], L"--port=", 7) == 0) {
             cfg->port = _wtoi(argvW[i] + 7);
         } else if (wcscmp(argvW[i], L"--help") == 0 || wcscmp(argvW[i], L"-h") == 0) {
-            MessageBoxA(NULL,
-                "Usage: {{ app_name }}.exe [options]\n\n"
+            char helpText[1024];
+            snprintf(helpText, sizeof(helpText),
+                "Usage: %s.exe [options]\n\n"
                 "Options:\n"
                 "  --ui          UI mode (WebView2 window, default)\n"
                 "  --console     Console mode (terminal window)\n"
                 "  --headless    Headless mode (no window)\n"
                 "  --port=PORT   Specify service port\n"
                 "  --help        Show this help",
-                "{{ app_name }}", MB_OK | MB_ICONINFORMATION);
+                cfg->app_name);
+            MessageBoxA(NULL, helpText, cfg->app_name, MB_OK | MB_ICONINFORMATION);
             if (argvW) LocalFree(argvW);
             ExitProcess(0);
         }
@@ -327,8 +398,8 @@ static bool is_child_running() {
 static bool start_child_process() {
     char cmdLine[MAX_PATH * 3];
     snprintf(cmdLine, sizeof(cmdLine),
-        "\"%s\\runtime\\{{ app_name }}-runtime.exe\" -m %s",
-        g_exeDir, g_cfg.app_module);
+        "\"%s\\runtime\\%s-runtime.exe\" -m %s",
+        g_exeDir, g_cfg.app_name, g_cfg.app_module);
 
     // Set environment variables
     SetEnvironmentVariableA("APP_MODE", "production");
@@ -381,7 +452,9 @@ static bool start_child_process() {
         snprintf(errorMsg, sizeof(errorMsg),
             "Failed to start application.\n\nCommand: %s\nWorkDir: %s\nError Code: %lu",
             cmdLine, workDir, GetLastError());
-        MessageBoxA(NULL, errorMsg, "{{ app_name }} - Error", MB_ICONERROR);
+        char msgTitle[256];
+        snprintf(msgTitle, sizeof(msgTitle), "%s - Error", g_cfg.app_name);
+        MessageBoxA(NULL, errorMsg, msgTitle, MB_ICONERROR);
         CloseHandle(g_hJob);
         g_hJob = NULL;
         return false;
@@ -393,8 +466,11 @@ static bool start_child_process() {
         // Common cause: child process is already in another non-breakaway job.
         // Non-fatal: TerminateProcess will still kill the direct child, but
         // grandchild processes (e.g., subprocess.Popen) may survive as orphans.
-        OutputDebugStringA("{{ app_name }}: WARNING - AssignProcessToJobObject failed, "
-                           "grandchild processes may not be cleaned up\n");
+        char dbgMsg[512];
+        snprintf(dbgMsg, sizeof(dbgMsg),
+            "%s: WARNING - AssignProcessToJobObject failed, "
+            "grandchild processes may not be cleaned up\n", g_cfg.app_name);
+        OutputDebugStringA(dbgMsg);
     }
 
     // Resume the process
@@ -481,8 +557,20 @@ static void create_tray_icon(HWND hwnd) {
     g_nid.uID = TRAYICON_ID;
     g_nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon = LoadIcon(g_hInstance, MAKEINTRESOURCE(1));
-    strcpy(g_nid.szTip, "{{ app_name }}");
+    g_nid.hIcon = NULL;
+    {
+        char exePath[MAX_PATH];
+        GetModuleFileNameA(NULL, exePath, MAX_PATH);
+        HICON hLarge = NULL, hSmall = NULL;
+        if (ExtractIconExA(exePath, 0, &hLarge, &hSmall, 1) > 0) {
+            g_nid.hIcon = hSmall ? hSmall : hLarge;
+        }
+    }
+    if (!g_nid.hIcon) {
+        g_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    }
+    strncpy(g_nid.szTip, g_cfg.app_name, sizeof(g_nid.szTip) - 1);
+    g_nid.szTip[sizeof(g_nid.szTip) - 1] = '\0';
 
     Shell_NotifyIconA(NIM_ADD, &g_nid);
     g_trayIconCreated = true;
@@ -600,8 +688,9 @@ public:
             // WebView2 failed, fall back to console mode
             MessageBoxA(NULL,
                 "WebView2 initialization failed.\nSwitching to console mode.",
-                "{{ app_name }}", MB_ICONWARNING);
-            strcpy(g_cfg.mode, "console");
+                g_cfg.app_name, MB_ICONWARNING);
+            strncpy(g_cfg.mode, "console", sizeof(g_cfg.mode) - 1);
+            g_cfg.mode[sizeof(g_cfg.mode) - 1] = '\0';
             PostMessage(g_hWnd, WM_CLOSE, 0, 0);
             return S_OK;
         }
@@ -612,7 +701,8 @@ public:
         // Get the CoreWebView2
         controller->get_CoreWebView2(&g_webview);
         if (!g_webview) {
-            strcpy(g_cfg.mode, "console");
+            strncpy(g_cfg.mode, "console", sizeof(g_cfg.mode) - 1);
+            g_cfg.mode[sizeof(g_cfg.mode) - 1] = '\0';
             PostMessage(g_hWnd, WM_CLOSE, 0, 0);
             return S_OK;
         }
@@ -720,8 +810,9 @@ public:
         if (FAILED(result) || !env) {
             MessageBoxA(NULL,
                 "Failed to create WebView2 environment.\nSwitching to console mode.",
-                "{{ app_name }}", MB_ICONWARNING);
-            strcpy(g_cfg.mode, "console");
+                g_cfg.app_name, MB_ICONWARNING);
+            strncpy(g_cfg.mode, "console", sizeof(g_cfg.mode) - 1);
+            g_cfg.mode[sizeof(g_cfg.mode) - 1] = '\0';
             PostMessage(g_hWnd, WM_CLOSE, 0, 0);
             return S_OK;
         }
@@ -771,7 +862,7 @@ static bool create_webview() {
             "Please install Microsoft Edge WebView2 Runtime:\n"
             "https://developer.microsoft.com/en-us/microsoft-edge/webview2/\n\n"
             "Switching to console mode.",
-            "{{ app_name }}", MB_ICONWARNING);
+            g_cfg.app_name, MB_ICONWARNING);
         strncpy(g_cfg.mode, "console", sizeof(g_cfg.mode) - 1);
         g_cfg.mode[sizeof(g_cfg.mode) - 1] = '\0';
         return false;
@@ -783,7 +874,7 @@ static bool create_webview() {
     if (!pfnCreateEnv) {
         MessageBoxA(NULL,
             "WebView2Loader.dll is invalid.\nSwitching to console mode.",
-            "{{ app_name }}", MB_ICONWARNING);
+            g_cfg.app_name, MB_ICONWARNING);
         FreeLibrary(hWebView2);
         strncpy(g_cfg.mode, "console", sizeof(g_cfg.mode) - 1);
         g_cfg.mode[sizeof(g_cfg.mode) - 1] = '\0';
@@ -931,7 +1022,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     "  - Missing dependencies\n\n"
                     "Try running with --console for more details.",
                     exitCode, g_cfg.port, g_cfg.app_module);
-                MessageBoxA(hwnd, errMsg, "{{ app_name }} - Error", MB_ICONERROR);
+                char msgTitle[256];
+                snprintf(msgTitle, sizeof(msgTitle), "%s - Error", g_cfg.app_name);
+                MessageBoxA(hwnd, errMsg, msgTitle, MB_ICONERROR);
                 DestroyWindow(hwnd);
                 return 0;
             }
@@ -950,11 +1043,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             } else if (g_serverWaitCount >= SERVER_WAIT_TIMEOUT_SEC * 1000 / TIMER_SERVER_INTERVAL_MS) {
                 // Timeout - server or WebView2 didn't become ready
                 KillTimer(hwnd, TIMER_SERVER_WAIT);
+                char msgTitle[256];
+                snprintf(msgTitle, sizeof(msgTitle), "%s - Error", g_cfg.app_name);
                 MessageBoxA(hwnd,
                     "Failed to start application.\n\n"
                     "The server or UI did not become ready within 30 seconds.\n"
                     "Try running with --console for more details.",
-                    "{{ app_name }} - Error", MB_ICONERROR);
+                    msgTitle, MB_ICONERROR);
                 DestroyWindow(hwnd);
             }
         }
@@ -1021,14 +1116,31 @@ static int run_headless_mode();
 
 static int run_ui_mode() {
     // 1. Register window class
-    WNDCLASSA wc = {};
+    WNDCLASSEXA wc = {};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = g_hInstance;
-    wc.hIcon = LoadIcon(g_hInstance, MAKEINTRESOURCE(1));
+    // Load application icon from exe resources (set by rcedit --set-icon)
+    // ExtractIconExA extracts both large and small icons from the exe,
+    // using the same logic as Windows Explorer (resource ID independent)
+    {
+        char exePath[MAX_PATH];
+        GetModuleFileNameA(NULL, exePath, MAX_PATH);
+        HICON hIconLarge = NULL, hIconSmall = NULL;
+        UINT count = ExtractIconExA(exePath, 0, &hIconLarge, &hIconSmall, 1);
+        if (count > 0) {
+            wc.hIcon = hIconLarge ? hIconLarge : LoadIcon(NULL, IDI_APPLICATION);
+            wc.hIconSm = hIconSmall ? hIconSmall : LoadIcon(NULL, IDI_APPLICATION);
+        } else {
+            // No icon resource, use system defaults
+            wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+            wc.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
+        }
+    }
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);  // system brush, no need to delete
-    wc.lpszClassName = "{{ app_name }}WndClass";
-    RegisterClassA(&wc);
+    wc.lpszClassName = g_wndClassName;
+    RegisterClassExA(&wc);
 
     // 2. Create main window (show immediately for fast perceived startup)
     DWORD style = WS_OVERLAPPEDWINDOW;
@@ -1038,7 +1150,7 @@ static int run_ui_mode() {
     }
 
     g_hWnd = CreateWindowA(
-        wc.lpszClassName, g_cfg.title,
+        g_wndClassName, g_cfg.title,
         style,
         CW_USEDEFAULT, CW_USEDEFAULT,
         g_cfg.width, g_cfg.height,
@@ -1046,6 +1158,23 @@ static int run_ui_mode() {
 
     if (!g_hWnd) {
         return 1;
+    }
+
+    // 2.5 Explicitly set window icons via WM_SETICON (most reliable method)
+    // This overrides the class icon and ensures both title bar and taskbar show the correct icon
+    {
+        char exePath[MAX_PATH];
+        GetModuleFileNameA(NULL, exePath, MAX_PATH);
+        HICON hIconLarge = NULL, hIconSmall = NULL;
+        UINT count = ExtractIconExA(exePath, 0, &hIconLarge, &hIconSmall, 1);
+        if (count > 0) {
+            if (hIconLarge) {
+                SendMessage(g_hWnd, WM_SETICON, ICON_BIG, (LPARAM)hIconLarge);
+            }
+            if (hIconSmall) {
+                SendMessage(g_hWnd, WM_SETICON, ICON_SMALL, (LPARAM)hIconSmall);
+            }
+        }
     }
 
     // 3. Show window immediately
@@ -1057,7 +1186,8 @@ static int run_ui_mode() {
         // WebView2 creation failed, fall back to console mode
         DestroyWindow(g_hWnd);
         g_hWnd = NULL;
-        strcpy(g_cfg.mode, "console");
+        strncpy(g_cfg.mode, "console", sizeof(g_cfg.mode) - 1);
+        g_cfg.mode[sizeof(g_cfg.mode) - 1] = '\0';
         return run_console_mode();
     }
 
@@ -1116,13 +1246,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    LPSTR lpCmdLine, int nCmdShow) {
     g_hInstance = hInstance;
 
-    // 1. Single instance check
-    g_hMutex = CreateMutexA(NULL, TRUE, "{{ app_name }}-SingleInstance");
+    // 1. Get exe directory (needed early for config parsing)
+    char exePath[MAX_PATH];
+    GetModuleFileNameA(NULL, exePath, MAX_PATH);
+    strncpy(g_exeDir, exePath, MAX_PATH - 1);
+    g_exeDir[MAX_PATH - 1] = '\0';
+    char *lastSlash = strrchr(g_exeDir, '\\');
+    if (lastSlash) *lastSlash = '\0';
+
+    // 2. Parse configuration (before single instance check, so mutex name is known)
+    config_set_defaults(&g_cfg);
+    config_parse_ini(g_exeDir, &g_cfg);
+    config_build_dynamic_strings(&g_cfg);
+
+    // 3. Single instance check
+    g_hMutex = CreateMutexA(NULL, TRUE, g_mutexName);
     if (g_hMutex == NULL || GetLastError() == ERROR_ALREADY_EXISTS) {
         if (g_hMutex) CloseHandle(g_hMutex);
 
         // Try to find and activate the existing window
-        HWND existingWnd = FindWindowA("{{ app_name }}WndClass", NULL);
+        HWND existingWnd = FindWindowA(g_wndClassName, NULL);
         if (existingWnd) {
             // Window found - activate it
             PostMessage(existingWnd, WM_SHOWMAINWINDOW, 0, 0);
@@ -1133,37 +1276,28 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         // Window not found but Mutex exists - previous instance may be shutting down,
         // or running in console/headless mode (which has no window to find).
         // Wait for the Mutex to be released (up to 2 seconds).
-        HANDLE hWait = OpenMutexA(SYNCHRONIZE, FALSE, "{{ app_name }}-SingleInstance");
+        HANDLE hWait = OpenMutexA(SYNCHRONIZE, FALSE, g_mutexName);
         if (hWait) {
             WaitForSingleObject(hWait, 2000);
             CloseHandle(hWait);
         }
 
         // Try again - previous instance should have exited by now
-        g_hMutex = CreateMutexA(NULL, TRUE, "{{ app_name }}-SingleInstance");
+        g_hMutex = CreateMutexA(NULL, TRUE, g_mutexName);
         if (g_hMutex == NULL || GetLastError() == ERROR_ALREADY_EXISTS) {
             if (g_hMutex) CloseHandle(g_hMutex);
             MessageBoxA(NULL,
                 "Application is already running.\n\nCheck the system tray or task manager.",
-                "{{ app_name }}", MB_OK | MB_ICONINFORMATION);
+                g_cfg.app_name, MB_OK | MB_ICONINFORMATION);
             return 0;
         }
         // Mutex acquired - previous instance has exited, we can proceed
     }
 
-    // 2. Get exe directory
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(NULL, exePath, MAX_PATH);
-    strcpy(g_exeDir, exePath);
-    char *lastSlash = strrchr(g_exeDir, '\\');
-    if (lastSlash) *lastSlash = '\0';
-
-    // 3. Parse configuration
-    config_set_defaults(&g_cfg);
-    config_parse_ini(g_exeDir, &g_cfg);
+    // 4. Parse command line arguments
     config_parse_args(&g_cfg);
 
-    // 3.5 Enable Per-Monitor DPI Awareness V2 (before creating any window)
+    // 5. Enable Per-Monitor DPI Awareness V2 (before creating any window)
     // This ensures the app renders crisply on high-DPI displays.
     {
         HMODULE hUser32 = GetModuleHandleA("user32.dll");
@@ -1178,19 +1312,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         }
     }
 
-    // 4. Initialize COM (needed for WebView2)
+    // 6. Initialize COM (needed for WebView2)
     HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     if (FAILED(hr)) {
         // COM init failed, force console mode
-        strcpy(g_cfg.mode, "console");
+        strncpy(g_cfg.mode, "console", sizeof(g_cfg.mode) - 1);
+        g_cfg.mode[sizeof(g_cfg.mode) - 1] = '\0';
     }
 
-    // 4.5 Install console ctrl handler (prevent orphan processes)
+    // 7. Install console ctrl handler (prevent orphan processes)
     // This must be done BEFORE starting the child process,
     // so that Ctrl+C / shutdown signals are caught.
     install_ctrl_handler();
 
-    // 4.6 Clean up leftover server on the port (defensive check)
+    // 8. Clean up leftover server on the port (defensive check)
     // If a previous instance crashed without releasing the port,
     // try to shut down the orphan server before starting a new one.
     if (check_health(g_cfg.port, 500)) {
@@ -1216,10 +1351,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         snprintf(msg, sizeof(msg),
             "Port %d is still in use. The application may fail to start.",
             g_cfg.port);
-        MessageBoxA(NULL, msg, "{{ app_name }} - Warning", MB_ICONWARNING);
+        char msgTitle[256];
+        snprintf(msgTitle, sizeof(msgTitle), "%s - Warning", g_cfg.app_name);
+        MessageBoxA(NULL, msg, msgTitle, MB_ICONWARNING);
     }
 
-    // 5. Start Python child process
+    // 9. Start Python child process
     if (!start_child_process()) {
         ReleaseMutex(g_hMutex);
         CloseHandle(g_hMutex);
@@ -1227,7 +1364,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         return 1;
     }
 
-    // 6. Run in selected mode
+    // 10. Run in selected mode
     int result;
     if (strcmp(g_cfg.mode, "ui") == 0) {
         result = run_ui_mode();
@@ -1243,7 +1380,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
         result = run_headless_mode();
     }
 
-    // 7. Cleanup
+    // 11. Cleanup
     // IMPORTANT: terminate_child() MUST complete before releasing the Mutex.
     // Otherwise a new instance could start while the old child process
     // is still holding the port, causing a port conflict crash.

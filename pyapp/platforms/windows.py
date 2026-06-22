@@ -23,32 +23,32 @@ class WindowsPlatform(BasePlatform):
     # 更新此版本时需验证 NuGet 包内 x64 DLL 路径未变
     WEBVIEW2_SDK_VERSION = "1.0.2792.45"
 
-    # rcedit 版本（用于修改 python.exe 的 VERSIONINFO）
+    # rcedit 版本（用于修改 exe 的 VERSIONINFO 和图标）
     RCEDIT_VERSION = "2.0.0"
     RCEDIT_URL = "https://github.com/electron/rcedit/releases/download/v{version}/rcedit-x64.exe"
 
-    def check_environment(self) -> tuple:
-        """检查 Windows 开发环境（MinGW）"""
-        if self._check_mingw():
-            self.logger.info("Available compiler: MinGW-w64 (g++)")
-            return True, []
-        else:
-            return False, ["MinGW-w64 (g++) not found. Run 'pyapp setup windows'"]
+    # 预编译 Stub 版本
+    STUB_VERSION = "1.0.0"
+    STUB_COMPATIBLE_VERSIONS = ["1.0.0"]  # 兼容的旧版本列表（用于回滚）
 
-    def _check_mingw(self) -> bool:
-        """检查 MinGW 是否可用"""
-        try:
-            result = subprocess.run(
-                ["g++", "--version"],
-                capture_output=True,
-                timeout=5,
-            )
-            return result.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
+    # GitHub 配置（可通过环境变量覆盖）
+    GITHUB_OWNER_ENV = "PYAPP_GITHUB_OWNER"
+
+    def _get_stub_download_url(self) -> str:
+        """获取 stub 下载 URL（运行时求值，支持环境变量覆盖）"""
+        owner = os.environ.get(self.GITHUB_OWNER_ENV, "your-github-user")
+        return (
+            f"https://github.com/{owner}/pyapp/releases/download/"
+            f"stub-v{self.STUB_VERSION}/pyapp-stub-x64.exe"
+        )
+
+    def check_environment(self) -> tuple:
+        """检查 Windows 开发环境"""
+        # 预编译 stub 模式下无需编译器
+        return True, []
 
     def create(self, project_dir: Path, config: Dict[str, Any]) -> None:
-        """创建 Windows 项目结构（Stub 源码 + 配置文件）"""
+        """创建 Windows 项目结构（配置文件）"""
         bundle_dir = project_dir / "bundles" / "windows"
 
         if bundle_dir.exists():
@@ -63,17 +63,7 @@ class WindowsPlatform(BasePlatform):
     def build(self, project_dir: Path, config: Dict[str, Any], build_type: str = "debug") -> BuildResult:
         """构建 Windows 安装包"""
         try:
-            # 1. 检查环境
-            ok, missing = self.check_environment()
-            if not ok:
-                self.logger.warning(f"Missing: {', '.join(missing)}")
-                self.logger.warning("Stub compilation will be skipped")
-
-            # 2. 创建项目结构（如果不存在）
             bundle_dir = project_dir / "bundles" / "windows"
-
-            # 总是重新渲染 Stub 源码（确保版本号正确）
-            self._update_stub_sources(project_dir, config)
 
             app_name = self.get_app_name(config)
             app_module = self.get_app_module(config)
@@ -93,8 +83,8 @@ class WindowsPlatform(BasePlatform):
                 self.logger.info(f"Cleaning version directory: {current_version_path}")
                 self._rmtree_safe(current_version_path)
 
-            # 3. 下载 Embeddable Python
-            self.logger.step(1, 8, "Downloading Python runtime")
+            # 1. 下载 Embeddable Python
+            self.logger.step(1, 7, "Downloading Python runtime")
             from ..core.runtime import RuntimeManager
             runtime_manager = RuntimeManager()
             runtime_dir = bundle_dir / "runtime"
@@ -103,8 +93,8 @@ class WindowsPlatform(BasePlatform):
             # 修改 _pth 文件以支持自定义导入路径
             self._fix_pth_file(runtime_dir, version_dir, python_version)
 
-            # 3.5 复制 python.exe 为 {{app_name}}-runtime.exe 并修改 VERSIONINFO
-            self.logger.step(2, 8, "Creating runtime executable")
+            # 2. 复制 python.exe 为 {app_name}-runtime.exe 并修改 VERSIONINFO
+            self.logger.step(2, 7, "Creating runtime executable")
             icon_str = self.get_icon(config, "windows")
             icon_path = None
             if icon_str:
@@ -118,31 +108,32 @@ class WindowsPlatform(BasePlatform):
                     self.logger.warning(f"Icon file not found: {icon_candidate}")
             self._create_runtime_exe(runtime_dir, app_name, version, icon_path)
 
-            # 4. 同步 Python 源码
-            self.logger.step(3, 8, "Syncing Python source code")
+            # 3. 同步 Python 源码
+            self.logger.step(3, 7, "Syncing Python source code")
             self.sync_source_code(project_dir, "windows", config)
 
-            # 5. 同步前端资源
-            self.logger.step(4, 8, "Syncing frontend resources")
+            # 4. 同步前端资源
+            self.logger.step(4, 7, "Syncing frontend resources")
             self.sync_frontend_dist(project_dir, "windows", config)
 
-            # 6. 安装依赖
-            self.logger.step(5, 8, "Installing dependencies")
+            # 5. 安装依赖
+            self.logger.step(5, 7, "Installing dependencies")
             self.install_dependencies(project_dir, config, "windows")
 
-            # 7. 编译 Stub（可选）
-            self.logger.step(6, 8, "Compiling Stub")
-            exe_path = self._compile_stub(bundle_dir, app_name)
+            # 6. 创建 Stub exe（复制预编译 stub + rcedit 修改）
+            self.logger.step(6, 7, "Creating Stub executable")
+            exe_path = self._create_stub_exe(bundle_dir, app_name, version, icon_path)
             if not exe_path:
-                # 创建启动脚本替代
-                exe_path = self._create_launch_script(bundle_dir, app_name, app_module, version_dir, config)
+                return BuildResult(success=False, error_message="Failed to create stub executable")
 
-            # 7.5 下载 WebView2Loader.dll（UI 模式需要）
-            self.logger.step(7, 8, "Downloading WebView2Loader.dll")
+            # 6.5 下载 WebView2Loader.dll（UI 模式需要）
             self._download_webview2_loader(bundle_dir)
 
-            # 8. 打包 ZIP
-            self.logger.step(8, 8, "Packaging ZIP")
+            # 6.6 渲染 app.ini
+            self._render_all_templates(project_dir, config)
+
+            # 7. 打包 ZIP
+            self.logger.step(7, 7, "Packaging ZIP")
             dist_dir = self.ensure_dist_dir(project_dir)
             zip_filename = f"{app_name}-{version}-windows-x86_64.zip"
             zip_path = dist_dir / zip_filename
@@ -165,18 +156,12 @@ class WindowsPlatform(BasePlatform):
         version_dir = f"{app_name}-{version}"
         bundle_dir = project_dir / "bundles" / "windows"
 
-        # 查找 exe 或启动脚本
+        # 查找 exe
         exe_path = bundle_dir / f"{app_name}.exe"
-        bat_path = bundle_dir / f"{app_name}.bat"
 
         if exe_path.exists():
             subprocess.Popen([str(exe_path)], cwd=str(bundle_dir))
             self.logger.info(f"Started {exe_path}")
-            return
-
-        if bat_path.exists():
-            subprocess.Popen(["cmd", "/c", str(bat_path)], cwd=str(bundle_dir))
-            self.logger.info(f"Started {bat_path}")
             return
 
         # 使用 Python 直接运行
@@ -264,89 +249,102 @@ class WindowsPlatform(BasePlatform):
         self.logger.info("Release package created (unsigned)")
         return result
 
-    def _compile_stub(self, bundle_dir: Path, app_name: str) -> Optional[Path]:
-        """编译 Windows Stub（使用 MinGW）"""
-        stub_cpp = bundle_dir / "app_stub.cpp"
-        stub_rc = bundle_dir / "app_stub.rc"
+    # ========== Stub 管理（预编译模式） ==========
 
-        if not stub_cpp.exists():
+    def _get_stub_exe(self) -> Optional[Path]:
+        """获取预编译 stub exe（内置优先，远程 fallback，支持回滚）"""
+        import urllib.request
+        from ..core.cache import CacheManager
+
+        cache_manager = CacheManager()
+        tools_dir = cache_manager.cache_dir / "tools"
+
+        # 优先级 1：内置 stub（零网络依赖）
+        builtin_stub = Path(__file__).parent.parent / "stubs" / "windows" / "pyapp-stub-x64.exe"
+        if builtin_stub.exists() and builtin_stub.stat().st_size > 0:
+            self.logger.info(f"Using builtin stub: {builtin_stub}")
+            return builtin_stub
+
+        # 优先级 2：缓存 stub（当前版本）
+        stub_dir = tools_dir / f"pyapp-stub-v{self.STUB_VERSION}"
+        stub_exe = stub_dir / "pyapp-stub.exe"
+        if stub_exe.exists() and stub_exe.stat().st_size > 0:
+            self.logger.info(f"Using cached stub v{self.STUB_VERSION}: {stub_exe}")
+            return stub_exe
+
+        # 优先级 3：从 GitHub Release 下载
+        self.logger.info(f"Downloading stub v{self.STUB_VERSION}...")
+        try:
+            stub_dir.mkdir(parents=True, exist_ok=True)
+            urllib.request.urlretrieve(self._get_stub_download_url(), str(stub_exe))
+
+            if stub_exe.exists() and stub_exe.stat().st_size > 0:
+                self.logger.success(f"Stub downloaded: {stub_exe}")
+                return stub_exe
+            else:
+                stub_exe.unlink(missing_ok=True)
+                self.logger.error("Stub download failed or file is empty")
+        except Exception as e:
+            self.logger.error(f"Failed to download stub: {e}")
+
+        # 优先级 4：回滚到兼容的旧版本
+        for old_version in self.STUB_COMPATIBLE_VERSIONS:
+            if old_version == self.STUB_VERSION:
+                continue  # 跳过当前版本（已尝试）
+            old_stub_dir = tools_dir / f"pyapp-stub-v{old_version}"
+            old_stub_exe = old_stub_dir / "pyapp-stub.exe"
+            if old_stub_exe.exists() and old_stub_exe.stat().st_size > 0:
+                self.logger.warning(f"Using fallback stub v{old_version}: {old_stub_exe}")
+                return old_stub_exe
+
+        self.logger.error("No stub available")
+        return None
+
+    def _create_stub_exe(self, bundle_dir: Path, app_name: str, version: str,
+                         icon_path: Optional[Path] = None) -> Optional[Path]:
+        """复制预编译 stub 并用 rcedit 修改图标和版本信息"""
+        stub_src = self._get_stub_exe()
+        if not stub_src:
+            self.logger.error("Pre-built stub not available")
             return None
 
         exe_path = bundle_dir / f"{app_name}.exe"
 
-        # 检查 MinGW 是否可用
-        if not self._check_mingw():
-            self.logger.warning("MinGW-w64 (g++) not found")
-            return None
+        # 清理旧的 stub exe（app_name 变更时残留）
+        for old_exe in bundle_dir.glob("*.exe"):
+            if old_exe.name != f"{app_name}.exe" and not old_exe.name.endswith("-runtime.exe"):
+                old_exe.unlink(missing_ok=True)
 
-        self.logger.info("Using MinGW compiler")
-        return self._compile_stub_mingw(bundle_dir, exe_path, stub_cpp, stub_rc)
+        # 复制预编译 stub
+        shutil.copy2(stub_src, exe_path)
+        self.logger.info(f"Copied stub -> {exe_path.name}")
 
-    def _compile_stub_mingw(self, bundle_dir: Path, exe_path: Path,
-                            stub_cpp: Path, stub_rc: Path) -> Optional[Path]:
-        """使用 MinGW 编译 Stub"""
-        try:
-            # 编译资源文件
-            stub_res = bundle_dir / "app_stub.res"
-            if stub_rc.exists():
-                result = subprocess.run(
-                    ["windres", str(stub_rc), "-O", "coff", "-o", str(stub_res)],
-                    capture_output=True, text=True,
-                )
-                if result.returncode != 0:
-                    self.logger.warning(f"Resource compilation failed: {result.stderr}")
-                    stub_res = None
-                else:
-                    # 确保文件确实存在（编译成功但文件可能被意外删除）
-                    if stub_res.exists():
-                        self.logger.info("Resource file compiled")
-                    else:
-                        self.logger.warning(f"Resource file not found after compilation: {stub_res}")
-                        stub_res = None
+        # 用 rcedit 修改 VERSIONINFO 和图标
+        rcedit_path = self._get_rcedit()
+        if rcedit_path:
+            try:
+                cmd = [
+                    str(rcedit_path),
+                    str(exe_path),
+                    "--set-version-string", "FileDescription", app_name,
+                    "--set-version-string", "ProductName", app_name,
+                    "--set-version-string", "OriginalFilename", f"{app_name}.exe",
+                    "--set-version-string", "InternalName", app_name,
+                    "--set-file-version", version,
+                    "--set-product-version", version,
+                ]
+                if icon_path and icon_path.exists():
+                    cmd.extend(["--set-icon", str(icon_path)])
+                subprocess.run(cmd, capture_output=True, text=True, check=True)
+                self.logger.success(f"VERSIONINFO updated for {exe_path.name}")
+            except (subprocess.CalledProcessError, OSError) as e:
+                self.logger.warning(f"rcedit failed for stub: {e}")
+        else:
+            self.logger.warning("rcedit not available, stub VERSIONINFO not modified")
 
-            # 编译 Stub (C++)
-            cmd = [
-                "g++", "-o", str(exe_path),
-                str(stub_cpp),
-                "-mwindows", "-O2", "-s",
-                "-static-libgcc", "-static-libstdc++",  # 静态链接 GCC 运行时（避免依赖 DLL）
-                "-lwinhttp", "-lole32", "-loleaut32", "-lshell32", "-lgdi32", "-lws2_32",
-            ]
-            if stub_res and stub_res.exists():
-                cmd.append(str(stub_res))
+        return exe_path
 
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                # 清理中间文件
-                if stub_res and stub_res.exists():
-                    stub_res.unlink(missing_ok=True)
-                self.logger.success(f"Stub compiled with MinGW: {exe_path}")
-                return exe_path
-            else:
-                self.logger.warning(f"MinGW compilation failed: {result.stderr}")
-                return None
-
-        except Exception as e:
-            self.logger.warning(f"MinGW compilation failed: {e}")
-            return None
-
-    def _create_launch_script(self, bundle_dir: Path, app_name: str, app_module: str, version_dir: str, config: Dict[str, Any]) -> Path:
-        """创建启动脚本（替代 Stub，当编译失败时使用）"""
-        port = self.get_port(config)
-        script_path = bundle_dir / f"{app_name}.bat"
-        runtime_exe = f"{app_name}-runtime.exe"
-        script_content = f'''@echo off
-cd /d "%~dp0"
-set PATH=runtime;runtime\\Scripts;%PATH%
-set PYTHONPATH={version_dir}\\app;{version_dir}\\app_packages;%PYTHONPATH%
-set APP_MODE=production
-set APP_PORT={port}
-runtime\\{runtime_exe} -m {app_module}
-pause
-'''
-        script_path.write_text(script_content, encoding="utf-8")
-        self.logger.info(f"Launch script created: {script_path}")
-        return script_path
+    # ========== WebView2 ==========
 
     def _download_webview2_loader(self, bundle_dir: Path) -> None:
         """下载 WebView2Loader.dll（UI 模式运行时依赖）
@@ -428,33 +426,7 @@ pause
             self.logger.warning(f"Failed to download WebView2Loader.dll: {e}")
             self.logger.warning("UI mode will not work. Install WebView2 SDK manually or use --console mode.")
 
-    def _rmtree_safe(self, path: Path) -> None:
-        """安全删除目录，处理 Windows 文件锁定问题"""
-        import time
-        import stat
-
-        def on_rm_error(func, path_str, exc_info):
-            """处理删除错误"""
-            try:
-                os.chmod(path_str, stat.S_IWRITE)
-                func(path_str)
-            except Exception:
-                time.sleep(0.5)
-                try:
-                    func(path_str)
-                except Exception as e:
-                    self.logger.warning(f"Failed to delete {path_str}: {e}")
-
-        for attempt in range(3):
-            try:
-                shutil.rmtree(path, onerror=on_rm_error)
-                return
-            except Exception as e:
-                if attempt < 2:
-                    self.logger.warning(f"Retry {attempt + 1} to remove {path}")
-                    time.sleep(1)
-                else:
-                    raise
+    # ========== Runtime 管理 ==========
 
     def _create_runtime_exe(self, runtime_dir: Path, app_name: str, version: str, icon_path: Optional[Path] = None) -> None:
         """复制 python.exe 为 {app_name}-runtime.exe 并用 rcedit 修改 VERSIONINFO 和图标
@@ -552,6 +524,36 @@ pause
             self.logger.warning(f"Failed to download rcedit: {e}")
             return None
 
+    # ========== 工具方法 ==========
+
+    def _rmtree_safe(self, path: Path) -> None:
+        """安全删除目录，处理 Windows 文件锁定问题"""
+        import time
+        import stat
+
+        def on_rm_error(func, path_str, exc_info):
+            """处理删除错误"""
+            try:
+                os.chmod(path_str, stat.S_IWRITE)
+                func(path_str)
+            except Exception:
+                time.sleep(0.5)
+                try:
+                    func(path_str)
+                except Exception as e:
+                    self.logger.warning(f"Failed to delete {path_str}: {e}")
+
+        for attempt in range(3):
+            try:
+                shutil.rmtree(path, onerror=on_rm_error)
+                return
+            except Exception as e:
+                if attempt < 2:
+                    self.logger.warning(f"Retry {attempt + 1} to remove {path}")
+                    time.sleep(1)
+                else:
+                    raise
+
     def _fix_pth_file(self, runtime_dir: Path, version_dir: str, python_version: str = "3.10") -> None:
         """修改 Embeddable Python 的 _pth 文件以支持自定义导入路径"""
         pth_files = list(runtime_dir.glob("python*._pth"))
@@ -579,14 +581,9 @@ import site
         self.logger.success(f"Updated {pth_file.name} with custom import paths")
 
     def _create_zip(self, source_dir: Path, zip_path: Path, top_dir: str = ""):
-        """创建 ZIP 包，排除编译源文件和 WebView2 头文件"""
+        """创建 ZIP 包，排除不需要分发的文件"""
         exclude_files = {
-            "app_stub.cpp",
-            "app_stub.rc",
-            "app_stub.res",
-            "build.bat",
-            "WebView2.h",       # 编译时头文件，不需要分发
-            "app_icon.ico",     # 编译时图标资源，已嵌入 exe
+            "app_icon.ico",     # 图标资源，已通过 rcedit 嵌入 exe
         }
 
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -599,12 +596,8 @@ import site
                         arcname = Path(top_dir) / arcname
                     zf.write(file_path, arcname)
 
-    def _update_stub_sources(self, project_dir: Path, config: Dict[str, Any]) -> None:
-        """更新 Stub 源码（确保版本号正确）"""
-        self._render_all_templates(project_dir, config)
-
     def _render_all_templates(self, project_dir: Path, config: Dict[str, Any]) -> None:
-        """渲染所有 Jinja2 模板并复制静态资源"""
+        """渲染 Jinja2 模板（仅 app.ini）"""
         from jinja2 import Environment, FileSystemLoader
 
         app_name = self.get_app_name(config)
@@ -618,46 +611,16 @@ import site
 
         jinja_env = Environment(loader=FileSystemLoader(str(template_dir)))
 
-        # 处理图标：复制到 bundle 目录供 .rc 编译使用
-        icon_resource = ""
-        icon_str = self.get_icon(config, "windows")
-        if icon_str:
-            icon_candidate = project_dir / icon_str
-            # 如果路径没有 .ico 后缀，自动尝试添加
-            if not icon_candidate.exists() and not icon_str.lower().endswith('.ico'):
-                icon_candidate = project_dir / f"{icon_str}.ico"
-            if icon_candidate.exists():
-                icon_dst = bundle_dir / "app_icon.ico"
-                # 先删除已存在的目标文件，避免 Windows 文件锁定问题
-                if icon_dst.exists():
-                    try:
-                        # 移除只读属性（Windows 可能从 Git 或其他来源继承此属性）
-                        icon_dst.chmod(stat.S_IWRITE)
-                        icon_dst.unlink()
-                    except OSError as e:
-                        self.logger.warning(f"Could not remove existing icon file: {icon_dst}: {e}")
-                shutil.copy2(icon_candidate, icon_dst)
-                icon_resource = "app_icon.ico"
-
         template_vars = {
             "app_name": app_name,
             "app_module": app_module,
             "version": version,
             "port": port,
-            "icon_resource": icon_resource,
+            "stub_version": self.STUB_VERSION,
         }
 
-        # 渲染模板
-        self._render_template(jinja_env, "app_stub.cpp.j2", bundle_dir / "app_stub.cpp", template_vars)
-        self._render_template(jinja_env, "app_stub.rc.j2", bundle_dir / "app_stub.rc", template_vars)
-        self._render_template(jinja_env, "build.bat.j2", bundle_dir / "build.bat", template_vars)
+        # 只渲染 app.ini 模板
         self._render_template(jinja_env, "app.ini.j2", bundle_dir / "app.ini", template_vars)
-
-        # 复制 WebView2 头文件（非模板，直接复制，总是覆盖以保持最新）
-        webview2_h_src = template_dir / "WebView2.h"
-        webview2_h_dst = bundle_dir / "WebView2.h"
-        if webview2_h_src.exists():
-            shutil.copy2(webview2_h_src, webview2_h_dst)
 
     def _get_run_env(self, bundle_dir: Path, version_dir: str = "app") -> dict:
         """获取运行环境变量"""

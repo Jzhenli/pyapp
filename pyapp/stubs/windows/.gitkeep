@@ -1,0 +1,3 @@
+# This directory contains pre-compiled stub executables.
+# The actual stub exe will be added via CI or manual build.
+# See stub-src/windows/app_stub.cpp for the source code.

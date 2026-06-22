@@ -1,0 +1,52 @@
+name: Build Windows Stub
+
+on:
+  push:
+    tags:
+      - 'stub-v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          install: mingw-w64-x86_64-gcc
+
+      - name: Build stub
+        shell: msys2 {0}
+        run: |
+          cd stub-src/windows
+          g++ -o pyapp-stub-x64.exe app_stub.cpp \
+              -mwindows -O2 -s \
+              -static-libgcc -static-libstdc++ \
+              -lwinhttp -lole32 -loleaut32 -lshell32 -lgdi32 -lws2_32
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyapp-stub
+          path: stub-src/windows/pyapp-stub-x64.exe
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/stub-v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: stub-src/windows/pyapp-stub-x64.exe
+
+      # 自动提交到仓库（更新内置 stub）
+      # 需要 PAT token 权限，在 Settings -> Secrets 中配置
+      - name: Commit to repo
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path pyapp/stubs/windows -Force
+          Copy-Item stub-src/windows/pyapp-stub-x64.exe pyapp/stubs/windows/
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyapp/stubs/windows/pyapp-stub-x64.exe
+          git commit -m "Update pre-built stub to ${{ github.ref_name }}"
+          git push

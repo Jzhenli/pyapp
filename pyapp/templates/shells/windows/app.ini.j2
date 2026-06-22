@@ -2,6 +2,16 @@
 ; This file is read by the application launcher at startup.
 ; Command line arguments override settings in this file.
 
+[app]
+; Application name (used for Mutex, window class, messages)
+name = {{ app_name }}
+; Python module to run
+module = {{ app_module }}
+; Version directory name
+version_dir = {{ app_name }}-{{ version }}
+; Stub version compatibility (must match stub's STUB_VERSION)
+stub_version = {{ stub_version }}
+
 [launch]
 ; Launch mode: ui / console / headless
 ;   ui       - WebView2 window (default)
