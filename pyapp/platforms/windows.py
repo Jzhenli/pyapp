@@ -105,6 +105,9 @@ class WindowsPlatform(BasePlatform):
             icon_path = None
             if icon_str:
                 icon_candidate = project_dir / icon_str
+                # 如果路径没有 .ico 后缀，自动尝试添加
+                if not icon_candidate.exists() and not icon_str.lower().endswith('.ico'):
+                    icon_candidate = project_dir / f"{icon_str}.ico"
                 if icon_candidate.exists():
                     icon_path = icon_candidate
                 else:
@@ -590,6 +593,9 @@ import site
         icon_str = self.get_icon(config, "windows")
         if icon_str:
             icon_candidate = project_dir / icon_str
+            # 如果路径没有 .ico 后缀，自动尝试添加
+            if not icon_candidate.exists() and not icon_str.lower().endswith('.ico'):
+                icon_candidate = project_dir / f"{icon_str}.ico"
             if icon_candidate.exists():
                 icon_dst = bundle_dir / "app_icon.ico"
                 shutil.copy2(icon_candidate, icon_dst)
