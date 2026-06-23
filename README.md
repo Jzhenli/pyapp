@@ -105,16 +105,47 @@ pyapp run windows
 ### Windows
 
 - 使用 Embeddable Python 运行时
-- 编译为原生 exe（需要 MinGW-w64）
+- 预编译 Stub + rcedit 修改 VERSIONINFO 和图标
 - 输出 ZIP 包
 
 **环境要求**：
 
-- MinGW-w64（可选，用于编译 exe）
+- 无需编译器（使用预编译 Stub 模式）
+- 如需自定义 Stub，可本地编译（见下方说明）
 
-```bash
-# 安装 MinGW-w64
-pyapp setup windows
+#### 本地编译 Windows Stub
+
+Stub 源码位于 `stub-src/windows/app_stub.cpp`。如需修改并本地编译：
+
+**前置条件**：
+
+- MinGW-w64 (g++)
+
+**编译命令**：
+
+```powershell
+cd stub-src/windows
+
+g++ -o pyapp-stub-x64.exe app_stub.cpp `
+    -mwindows -O2 -s `
+    -static-libgcc -static-libstdc++ `
+    -lwinhttp -lole32 -loleaut32 -lshell32 -lws2_32
+```
+
+**参数说明**：
+
+| 参数 | 说明 |
+|------|------|
+| `-mwindows` | 生成 Windows GUI 程序（无控制台窗口） |
+| `-O2` | 优化级别 |
+| `-s` | 剥离调试符号，减小体积 |
+| `-static-libgcc -static-libstdc++` | 静态链接 GCC 运行时，避免依赖 DLL |
+| `-lwinhttp -lole32 ...` | 链接 Windows API 库（源码中 `#pragma comment(lib)` 是 MSVC 专用的，MinGW 需手动指定） |
+
+**更新内置 Stub**：
+
+```powershell
+copy /Y pyapp-stub-x64.exe ..\..\pyapp\stubs\windows\pyapp-stub-x64.exe
 ```
 
 ### Linux
@@ -393,7 +424,13 @@ pip install <package> --target bundles/windows/my-app-0.1.0/app_packages
 
 ### Q: 如何更新 Stub 源码？
 
-Stub 源码位于 `pyapp/templates/shells/windows/app_stub.c.j2`，修改后重新构建即可。
+Stub 源码位于 `stub-src/windows/app_stub.cpp`。修改后本地编译并更新内置 Stub：
+
+```powershell
+cd stub-src/windows
+g++ -o pyapp-stub-x64.exe app_stub.cpp -mwindows -O2 -s -static-libgcc -static-libstdc++ -lwinhttp -lole32 -loleaut32 -lshell32 -lws2_32
+copy /Y pyapp-stub-x64.exe ..\..\pyapp\stubs\windows\pyapp-stub-x64.exe
+```
 
 ## License
 
