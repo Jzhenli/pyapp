@@ -20,8 +20,17 @@ jobs:
       - name: Install build tools
         run: pip install build
 
+      - name: Clean dist directory
+        run: rm -rf dist
+
       - name: Build package
         run: python -m build
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-packages
+          path: dist/*
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
