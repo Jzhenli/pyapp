@@ -99,7 +99,9 @@ build (准备) → compile (可选，编译) → package (打包)
 ```
 pyapp build windows
         ↓
-pyapp run windows
+pyapp run windows              # 直接运行
+pyapp run windows -u           # 更新源码后运行
+pyapp run windows -ur          # 更新依赖和源码后运行
 ```
 
 ### 4.2 发布流程（无编译）
@@ -636,12 +638,65 @@ def package(platform, project_dir):
 
 ---
 
-## 7. GitHub Actions 使用示例
+## 7. GitHub Actions CI 模板
 
-### 8.1 Windows 构建
+### 7.1 设计目标
+
+`pyapp init` 时自动生成三个平台的 CI 脚本到 `.github/workflows/` 目录，用户无需手动编写。
+
+### 7.2 模板文件结构
+
+```
+pyapp/templates/
+├── project/
+│   └── pyproject.toml.j2
+└── ci/
+    ├── build-windows.yml.j2
+    ├── build-linux.yml.j2
+    └── build-android.yml.j2
+```
+
+### 7.3 init 命令生成 CI 脚本
+
+在 `commands/init.py` 的 `_create_project_structure()` 中添加 CI 脚本生成：
+
+```python
+def _create_project_structure(project_dir: Path, name: str, module_name: str, template: str):
+    # ... 现有代码 ...
+    
+    # 生成 CI 脚本
+    _generate_ci_workflows(project_dir, name, module_name)
+
+
+def _generate_ci_workflows(project_dir: Path, name: str, module_name: str):
+    """生成 GitHub Actions CI 脚本"""
+    ci_template_dir = Path(__file__).parent.parent / "templates" / "ci"
+    workflows_dir = project_dir / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+    
+    jinja_env = Environment(loader=FileSystemLoader(str(ci_template_dir)))
+    
+    for template_name in ["build-windows.yml.j2", "build-linux.yml.j2", "build-android.yml.j2"]:
+        jinja_template = jinja_env.get_template(template_name)
+        content = jinja_template.render(
+            name=name,
+            module_name=module_name,
+        )
+        output_name = template_name.replace(".j2", "")
+        (workflows_dir / output_name).write_text(content, encoding="utf-8")
+```
+
+### 7.4 CI 模板内容
+
+#### build-windows.yml.j2
 
 ```yaml
-# .github/workflows/build-windows.yml
+name: Build Windows
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
 
 jobs:
   build:
@@ -677,13 +732,18 @@ jobs:
           path: dist/*.zip
 ```
 
-### 7.2 Linux 构建（多架构）
+#### build-linux.yml.j2
 
 ```yaml
-# .github/workflows/build-linux.yml
+name: Build Linux
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
 
 jobs:
-  build:
+  build-aarch64:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -710,6 +770,99 @@ jobs:
           path: dist/*.tar.gz
 ```
 
+#### build-android.yml.j2
+
+```yaml
+name: Build Android
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  termux-compile:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Compile in Termux Docker
+        run: |
+          docker run --rm -v $PWD:/src termux/termux-docker:aarch64 \
+            bash /src/scripts/termux_compile.sh
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compiled-so
+          path: dist/*.so
+
+  build-compile-package:
+    needs: termux-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/download-artifact@v4
+        with:
+          name: compiled-so
+          path: dist
+      
+      - name: Install pyapp
+        run: pip install -e .
+      
+      - name: Build
+        run: pyapp build android
+      
+      - name: Compile with precompiled .so
+        run: pyapp compile android --precompiled dist/{{ module_name }}.so
+      
+      - name: Package APK
+        run: pyapp package android
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/*.apk
+```
+
+### 7.5 生成的项目结构
+
+`pyapp init myapp` 生成的目录结构：
+
+```
+myapp/
+├── .github/
+│   └── workflows/
+│       ├── build-windows.yml    # Windows CI 脚本
+│       ├── build-linux.yml     # Linux CI 脚本
+│       └── build-android.yml   # Android CI 脚本
+├── scripts/
+│   └── termux_compile.sh       # Termux 编译脚本
+├── src/
+│   └── myapp/
+├── frontend/
+├── pyproject.toml
+└── .gitignore
+```
+
+### 7.6 用户使用方式
+
+```bash
+# 1. 初始化项目（自动生成 CI 脚本）
+pyapp init myapp
+
+# 2. 本地开发
+cd myapp
+pyapp build windows
+pyapp run windows
+
+# 3. 发布（打 tag 自动触发 CI）
+git tag v1.0.0
+git push origin v1.0.0
+# → 自动执行 build → compile → package
+# → 生成 dist/*.zip, dist/*.tar.gz, dist/*.apk
+```
+
 ---
 
 ## 8. 命令对比总结
@@ -733,14 +886,14 @@ jobs:
 
 ## 9. Android 平台特殊处理
 
-Android 平台的 Nuitka 编译需要特殊处理，流程顺序与其他平台不同。
+Android 平台的 Nuitka 编译需要 Termux 环境支持，但流程与其他平台保持一致。
 
 ### 9.1 为什么需要特殊处理
 
 | 问题 | 说明 |
 |------|------|
 | **目标平台限制** | Nuitka 需要在目标平台编译，Android 编译必须在 Termux (ARM) 环境中执行 |
-| **跨平台执行** | compile 在 Termux Docker，build/package 在 Linux Runner |
+| **跨平台执行** | Termux 编译在 ARM 平台，build/compile/package 在 Linux 平台 |
 | **ELF 处理** | 编译产物需要 `termux-elf-cleaner` 和 `patchelf` 处理 |
 
 ### 9.2 Android 流程：区分开发与发布
@@ -758,25 +911,35 @@ pyapp build android → pyapp package android
 
 #### 发布流程（GitHub Actions）
 
-由于 compile 和 build/package 在不同平台执行，顺序调整为：
+流程与其他平台一致：`build → compile → package`，只是 compile 使用 Termux 预编译的 `.so` 文件：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Step 1: Termux Docker 编译（ARM 平台）                      │
 │                                                             │
 │  输入: src/{app_module}/                                    │
-│  输出: dist/{app_module}/ (含 .so + 桩文件)                  │
+│  输出: dist/{app_module}.so                                 │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
-│  Step 2: pyapp build android --precompiled（Linux 平台）     │
+│  Step 2: pyapp build android（Linux 平台）                   │
 │                                                             │
-│  输入: 编译产物目录                                          │
+│  输入: 源码                                                  │
 │  输出: bundles/android/app/src/main/python/{app_module}/    │
+│        (Python 源码)                                         │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
-│  Step 3: pyapp package android（Linux 平台）                 │
+│  Step 3: pyapp compile android --precompiled（Linux 平台）   │
+│                                                             │
+│  输入: bundles/ 目录 + dist/{app_module}.so                 │
+│  操作: 用 .so 替换源码，注入桩文件                            │
+│  输出: bundles/android/app/src/main/python/{app_module}/    │
+│        (含 .so + 桩文件)                                     │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  Step 4: pyapp package android（Linux 平台）                 │
 │                                                             │
 │  输入: bundles/android/                                     │
 │  输出: dist/{app}-android-{arch}.apk                        │
@@ -785,57 +948,129 @@ pyapp build android → pyapp package android
 
 ### 9.3 与 Windows/Linux 的流程对比
 
-| 平台 | 流程顺序 | compile 执行位置 |
-|------|---------|-----------------|
-| Windows | build → compile → package | 本机 Windows |
-| Linux | build → compile → package | 本机 Linux / QEMU |
-| **Android** | **compile → build → package** | Termux Docker (ARM) / Linux |
+| 平台 | 开发流程 | 发布流程（带编译） | compile 执行方式 |
+|------|---------|------------------|-----------------|
+| Windows | build → package | build → compile → package | 本机 Nuitka 编译 |
+| Linux | build → package | build → compile → package | 本机 Nuitka 编译 |
+| **Android** | build → package | build → compile → package | 使用 Termux 预编译的 .so |
+
+**统一性**：所有平台的发布流程都是 `build → compile → package`，只是 Android 的 compile 使用 Termux 预编译的 `.so` 文件。
 
 ### 9.4 Termux 编译脚本
 
-只编译源码，生成 `.so` 文件：
+只负责编译源码，生成 `.so` 文件：
 
 ```bash
 # scripts/termux_compile.sh
 
-cd /src/src/{app_module}
+cd /src/src
+APP_MODULE="{app_module}"
 
-python -m nuitka --module {app_module} --include-package={app_module} \
+python -m nuitka --module $APP_MODULE --include-package=$APP_MODULE \
   --output-dir=/src/dist --remove-output \
   --assume-yes-for-downloads --no-progressbar
 
 # 处理 ELF
 cd /src/dist
-SO_FILE=$(ls {app_module}.*.so 2>/dev/null | head -1)
-mv "$SO_FILE" {app_module}.so
-termux-elf-cleaner {app_module}.so || true
-patchelf --set-rpath '' {app_module}.so || true
+SO_FILE=$(ls $APP_MODULE.*.so 2>/dev/null | head -1)
+[ -z "$SO_FILE" ] && { echo "error: No .so produced"; exit 1; }
+mv "$SO_FILE" $APP_MODULE.so
+termux-elf-cleaner $APP_MODULE.so || true
+patchelf --set-rpath '' $APP_MODULE.so || true
+
+# 最终产物: dist/{app_module}.so
 ```
 
-### 9.5 pyapp build android 改进
+### 9.5 pyapp compile android 改进
 
-build 步骤需要支持接收预编译的 `.so` 文件：
+compile 命令添加 `--precompiled` 参数，支持使用预编译的 `.so` 文件：
 
 ```python
-# platforms/android.py
+# commands/compile.py
 
-def build(self, project_dir, config, build_type="debug", arch=None, 
-          precompiled_so=None):
+def compile_platform(platform: str, project_dir: Path = None, precompiled: Path = None):
     """
-    构建 Android 项目
+    编译 Python 源码为 pyd/so 文件
     
     Args:
-        precompiled_so: 预编译的 .so 文件路径（可选）
-                        如果提供，则直接放入 python 目录，不同步源码
+        platform: 平台名称 (windows/linux/android)
+        project_dir: 项目目录
+        precompiled: 预编译的 .so 文件路径（Android 专用）
+                     如果提供，跳过 Nuitka 编译，直接使用该文件替换源码
     """
-    # ...
+    # ... 加载配置、检查 bundles 目录 ...
     
-    if precompiled_so:
-        # 使用预编译产物
-        self._install_precompiled_module(bundle_dir, precompiled_so, config)
+    if platform == "android":
+        if precompiled:
+            # Android 发布流程：使用 Termux 预编译的 .so
+            if not precompiled.exists():
+                raise click.ClickException(f"Precompiled .so not found: {precompiled}")
+            logger.info(f"Using precompiled module: {precompiled}")
+            for module_name in modules:
+                install_precompiled_module(module_name, src_dir, precompiled)
+        else:
+            raise click.ClickException(
+                "Android compile requires --precompiled option.\n"
+                "Run Termux Docker first to generate .so file.\n"
+                "See: scripts/termux_compile.sh"
+            )
     else:
-        # 同步源码（未编译）
-        self._sync_python_source(project_dir, bundle_dir, config)
+        # Windows/Linux: 本机 Nuitka 编译
+        for module_name in modules:
+            mod_file = compile_module(module_name, src_dir, extension)
+            inject_stub(module_name, src_dir, mod_file)
+
+
+def install_precompiled_module(module_name: str, src_dir: Path, so_file: Path):
+    """
+    使用预编译的 .so 文件替换源码，并注入桩文件
+    
+    Args:
+        module_name: 模块名
+        src_dir: bundles 目录中的源码目录
+        so_file: Termux 预编译的 .so 文件路径
+    """
+    module_dir = src_dir / module_name
+    
+    # 备份非 .py 资源文件
+    _tmpdir = Path(tempfile.mkdtemp())
+    try:
+        if module_dir.exists():
+            for f in module_dir.rglob("*"):
+                if f.is_file() and not f.name.endswith(".py"):
+                    rel_path = f.relative_to(module_dir)
+                    dest = _tmpdir / rel_path
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(f), str(dest))
+            shutil.rmtree(module_dir)
+        
+        module_dir.mkdir()
+        
+        # 恢复资源文件
+        for f in _tmpdir.rglob("*"):
+            if f.is_file():
+                rel_path = f.relative_to(_tmpdir)
+                dest = module_dir / rel_path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(f), str(dest))
+    finally:
+        shutil.rmtree(str(_tmpdir), ignore_errors=True)
+    
+    # 复制 .so 文件到模块目录
+    so_name = so_file.name
+    shutil.copy2(str(so_file), str(module_dir / so_name))
+    
+    # 注入桩文件
+    (module_dir / "__init__.py").write_text(
+        INIT_PY_TEMPLATE.format(pkg_name=module_name, mod_file=so_name),
+        encoding="utf-8"
+    )
+    (module_dir / "__main__.py").write_text(
+        MAIN_PY_TEMPLATE.format(pkg_name=module_name),
+        encoding="utf-8"
+    )
+    
+    logger.success(f"Module {module_name} installed with precompiled .so")
 ```
 
 ### 9.6 GitHub Actions Android 流程示例
@@ -845,7 +1080,7 @@ def build(self, project_dir, config, build_type="debug", arch=None,
 
 jobs:
   # Step 1: Termux 编译（ARM 平台）
-  compile:
+  termux-compile:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -860,9 +1095,9 @@ jobs:
           name: compiled-so
           path: dist/*.so
 
-  # Step 2 + 3: build + package（Linux 平台）
-  build-package:
-    needs: compile
+  # Step 2-4: build → compile → package（Linux 平台）
+  build-compile-package:
+    needs: termux-compile
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -872,8 +1107,11 @@ jobs:
           name: compiled-so
           path: dist
       
-      - name: Build with precompiled module
-        run: pyapp build android --precompiled dist/{app_module}.so
+      - name: Build
+        run: pyapp build android
+      
+      - name: Compile with precompiled .so
+        run: pyapp compile android --precompiled dist/{app_module}.so
       
       - name: Package APK
         run: pyapp package android
@@ -886,44 +1124,121 @@ jobs:
 
 ### 9.7 CLI 命令扩展
 
+compile 命令添加 `--precompiled` 参数：
+
 ```python
 # cli.py
 
 @main.command()
-@click.argument("platform", type=click.Choice(["android", "windows", "linux", "all"]))
+@click.argument("platform", type=click.Choice(["windows", "linux", "android"]))
+@click.option("-d", "--project-dir", type=click.Path(exists=True), help="项目目录")
 @click.option("--precompiled", type=click.Path(exists=True), 
-              help="预编译的 .so/.pyd 文件路径（Android 专用）")
-def build(platform, precompiled, ...):
-    """准备平台构建目录"""
-    if platform == "android" and precompiled:
-        # 使用预编译产物
-        ...
+              help="预编译的 .so 文件路径（Android 专用，Termux 编译产物）")
+def compile(platform, project_dir, precompiled):
+    """编译 Python 源码为 pyd/so 文件（需要先 build）
+    
+    使用 Nuitka 将 Python 源码编译为原生二进制，保护源码并提升性能。
+    
+    注意：
+    - Windows/Linux: 在本机执行 Nuitka 编译
+    - Android: 需要先通过 Termux Docker 编译，再使用 --precompiled 指定 .so 文件
+    
+    前置条件：
+    - Windows/Linux: 安装 Nuitka: pip install nuitka ordered-set zstandard
+    - Android: 先执行 Termux Docker 编译生成 .so 文件
+    - 所有平台: 先执行 pyapp build
+    
+    示例:
+      # Windows/Linux
+      pyapp build windows
+      pyapp compile windows
+      pyapp package windows
+      
+      # Android（在 GitHub Actions 中）
+      pyapp build android
+      pyapp compile android --precompiled dist/{app_module}.so
+      pyapp package android
+    """
+    from .commands.compile import compile_platform
+    compile_platform(platform, Path(project_dir) if project_dir else None, 
+                     Path(precompiled) if precompiled else None)
 ```
 
 ### 9.8 总结
 
-| 步骤 | 命令/操作 | 执行平台 | 输入 | 输出 |
-|------|----------|---------|------|------|
-| 1 | Termux Docker 编译 | ARM | `src/{module}/` | `dist/{module}.so` |
-| 2 | `pyapp build android --precompiled` | Linux | `.so` 文件 | `bundles/android/` |
-| 3 | `pyapp package android` | Linux | `bundles/android/` | `dist/*.apk` |
+#### 开发流程（所有平台）
+
+| 命令 | 说明 |
+|------|------|
+| `pyapp build android` | 准备 bundles 目录（使用源码） |
+| `pyapp package android` | 打包 APK |
+
+#### 发布流程（所有平台统一）
+
+| 步骤 | Windows/Linux | Android |
+|------|--------------|---------|
+| 1 | `pyapp build` | `pyapp build` |
+| 2 | `pyapp compile`（本机 Nuitka） | Termux 编译 → `pyapp compile --precompiled` |
+| 3 | `pyapp package` | `pyapp package` |
 
 **关键点**：
-- compile 在 Termux Docker (ARM) 执行，只需要源码
-- build 在 Linux 执行，接收预编译产物
-- 减少跨平台文件传输（只传输 `.so` 文件）
+- 所有平台的发布流程都是 `build → compile → package`
+- Android 的 compile 使用 Termux 预编译的 `.so` 文件，跳过本机 Nuitka 编译
+- compile 命令在所有平台都存在，只是 Android 需要额外的 `--precompiled` 参数
 
 ---
 
 ## 10. 待确认事项
 
-1. **Android 平台** ✅ 已确认：不实现 `pyapp compile android` 命令，Android 编译在 GitHub Actions 中通过 Termux Docker 完成。
+1. **Android 平台** ✅ 已确认：实现 `pyapp compile android --precompiled` 命令，使用 Termux Docker 预编译的 .so 文件。流程与其他平台统一为 `build → compile → package`。
 
 2. **签名功能**：`package` 命令是否需要集成签名功能（Windows signtool / Android jarsigner）？
 
 3. **向后兼容**：是否需要保留 `build` 的打包行为（通过参数控制）？
 
-4. **`dev` 命令**：`dev` 命令目前调用 `build`，重构后是否需要调整？
+4. **`dev` 命令移除** ✅ 已确认：移除 `pyapp dev` 命令，改为 `run` 命令支持更新参数。
+
+   - 移除 `pyapp dev` 命令
+   - 增强 `pyapp run` 命令，添加 `-u/--update` 和 `-r/--rebuild` 参数（类似 Briefcase）
+   - 开发流程：`build` → `run` 或 `run -ur`（更新依赖和源码再运行）
+
+   **`run` 命令参数设计**：
+
+   ```python
+   @main.command()
+   @click.argument("platform", type=click.Choice(["android", "windows", "linux"]))
+   @click.option("-d", "--project-dir", type=click.Path(exists=True), help="项目目录")
+   @click.option("-u", "--update", is_flag=True, 
+                 help="更新应用源码（不更新依赖）")
+   @click.option("-r", "--rebuild", is_flag=True, 
+                 help="重新安装依赖（包含源码更新）")
+   def run(platform, project_dir, update, rebuild):
+       """运行应用
+       
+       如果 bundles 目录不存在，会先自动执行 build。
+       
+       示例:
+         pyapp run windows              # 直接运行
+         pyapp run windows -u          # 更新源码后运行
+         pyapp run windows -ur         # 更新依赖和源码后运行
+       """
+   ```
+
+   **开发流程**：
+
+   | 场景 | 命令 | 说明 |
+   |------|------|------|
+   | 首次运行 | `pyapp build` → `pyapp run` | 完整构建后运行 |
+   | 修改源码后 | `pyapp run -u` | 更新源码后运行 |
+   | 修改依赖后 | `pyapp run -ur` | 更新依赖和源码后运行 |
+
+   **发布流程**：
+
+   ```
+   pyapp build → pyapp compile → pyapp package
+   ```
+
+   `run` 命令仅用于开发调试，不参与发布流程。
 
 ---
 
@@ -932,7 +1247,9 @@ def build(platform, precompiled, ...):
 1. 修改 `BasePlatform.build()` 抽象方法签名
 2. 修改 `WindowsPlatform.build()` 和 `package()`
 3. 修改 `LinuxPlatform.build()` 和 `package()`
-4. 新增 `commands/compile.py`
-5. 更新 `cli.py` 命令注册
-6. 更新文档和帮助信息
-7. 添加 GitHub Actions workflow 示例
+4. 新增 `commands/compile.py`（含 `install_precompiled_module` 函数）
+5. 移除 `pyapp dev` 命令（`cli.py` + `commands/dev.py` + 各平台 `dev()` 方法）
+6. 增强 `pyapp run` 命令，添加 `-u/--update` 和 `-r/--rebuild` 参数
+7. 更新 `cli.py` 命令注册
+8. 更新文档和帮助信息
+9. 添加 GitHub Actions workflow 示例
