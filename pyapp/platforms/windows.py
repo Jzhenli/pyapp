@@ -545,13 +545,22 @@ import site
     def _create_zip(self, source_dir: Path, zip_path: Path, top_dir: str = ""):
         """创建 ZIP 包，排除不需要分发的文件"""
         exclude_files = {
-            "app_icon.ico",     # 图标资源，已通过 rcedit 嵌入 exe
+            "app_icon.ico",         # 图标资源，已通过 rcedit 嵌入 exe
+            "build.meta.json",      # 构建元信息，运行时不需要
+        }
+        exclude_dirs = {
+            "__pycache__",          # Python 编译缓存，Embeddable Python 不使用
+            "webview_data",         # WebView2 用户数据，运行时自动生成
         }
 
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file_path in source_dir.rglob("*"):
                 if file_path.is_file():
+                    # 排除特定文件
                     if file_path.name in exclude_files:
+                        continue
+                    # 排除特定目录下的文件
+                    if any(part in exclude_dirs for part in file_path.parts):
                         continue
                     arcname = file_path.relative_to(source_dir)
                     if top_dir:

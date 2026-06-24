@@ -276,10 +276,23 @@ exec runtime/bin/python{python_version} -m {app_module}
                     raise
 
     def _create_tarball(self, source_dir: Path, tar_path: Path, top_dir: str = ""):
-        """创建 tar.gz 包"""
+        """创建 tar.gz 包，排除不需要分发的文件"""
+        exclude_files = {
+            "build.meta.json",      # 构建元信息，运行时不需要
+        }
+        exclude_dirs = {
+            "__pycache__",          # Python 编译缓存
+        }
+
         with tarfile.open(tar_path, "w:gz") as tf:
             for file_path in source_dir.rglob("*"):
                 if file_path.is_file():
+                    # 排除特定文件
+                    if file_path.name in exclude_files:
+                        continue
+                    # 排除特定目录下的文件
+                    if any(part in exclude_dirs for part in file_path.parts):
+                        continue
                     arcname = file_path.relative_to(source_dir)
                     if top_dir:
                         arcname = str(Path(top_dir) / arcname).replace("\\", "/")
