@@ -12,6 +12,13 @@ dependencies = [
     "packaging>=23.0",
 ]
 
+[project.optional-dependencies]
+compile = [
+    "nuitka==2.7.12",
+    "ordered-set",
+    "zstandard",
+]
+
 [project.scripts]
 pyapp = "pyapp.cli:main"
 

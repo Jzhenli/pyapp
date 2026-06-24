@@ -1,13 +1,29 @@
-name: Build Windows
+{% raw %}name: Build Windows App
 
 on:
   push:
-    tags: ['v*']
+    tags:
+      - '*-windows/v*'
+      - '*-all/v*'
   workflow_dispatch:
+    inputs:
+      enable_nuitka:
+        description: 'Enable Nuitka compilation'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -16,24 +32,71 @@ jobs:
           python-version: '3.11'
 
       - name: Install pyapp
-        run: pip install -e .
+        run: pip install "git+https://github.com/Jzhenli/pyapp.git#egg=pyapp-cli[compile]"
+
+      - name: Resolve variables and update version
+        id: vars
+        shell: bash
+        env:
+          ENABLE_NUITKA_INPUT: ${{ inputs.enable_nuitka }}
+        run: |
+          python << 'EOF' >> $GITHUB_OUTPUT
+          import tomllib, os
+
+          with open('pyproject.toml', 'rb') as f:
+              config = tomllib.load(f)
+
+          app_name = config['project']['name']
+          default_ver = config['project']['version']
+
+          # Resolve version: tag > pyproject.toml default
+          ref = os.environ.get('GITHUB_REF', '')
+          if ref.startswith('refs/tags/'):
+              version = ref.replace('refs/tags/', '').rsplit('/v', 1)[-1]
+          else:
+              version = default_ver
+
+          # Update version in pyproject.toml
+          if version != default_ver:
+              content = open('pyproject.toml').read()
+              content = content.replace(f'version = "{default_ver}"', f'version = "{version}"', 1)
+              open('pyproject.toml', 'w').write(content)
+
+          # Resolve enable_nuitka: tag trigger always true, dispatch from input
+          event = os.environ.get('GITHUB_EVENT_NAME', '')
+          enable_nuitka = 'true' if event != 'workflow_dispatch' else os.environ.get('ENABLE_NUITKA_INPUT', 'true')
+
+          print(f'app_name={app_name}')
+          print(f'version={version}')
+          print(f'enable_nuitka={enable_nuitka}')
+          EOF
 
       - name: Build
         run: pyapp build windows
 
-      - name: Install Nuitka
-        run: pip install nuitka=={{ nuitka_version }} ordered-set zstandard
-
       - name: Setup MSVC
+        if: steps.vars.outputs.enable_nuitka == 'true'
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Compile
+      - name: Compile with Nuitka
+        if: steps.vars.outputs.enable_nuitka == 'true'
         run: pyapp compile windows
 
       - name: Package
         run: pyapp package windows
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: windows-package
+          name: ${{ steps.vars.outputs.app_name }}-${{ steps.vars.outputs.version }}-windows
           path: dist/*.zip
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          echo "### Windows Build" >> $GITHUB_STEP_SUMMARY
+          echo "- **App**: ${{ steps.vars.outputs.app_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ steps.vars.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Nuitka**: ${{ steps.vars.outputs.enable_nuitka }}" >> $GITHUB_STEP_SUMMARY
+{% endraw %}

@@ -1,35 +1,148 @@
-name: Build Linux
+{% raw %}name: Build Linux App
 
 on:
   push:
-    tags: ['v*']
+    tags:
+      - '*-linux/v*'
+      - '*-all/v*'
   workflow_dispatch:
+    inputs:
+      archs:
+        description: 'Target architectures'
+        required: false
+        type: choice
+        options: [armv7l, aarch64, 'armv7l,aarch64']
+        default: 'armv7l'
+      enable_nuitka:
+        description: 'Enable Nuitka compilation'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-aarch64:
+  config:
     runs-on: ubuntu-latest
+    outputs:
+      app_name: ${{ steps.vars.outputs.app_name }}
+      version: ${{ steps.vars.outputs.version }}
+      enable_nuitka: ${{ steps.vars.outputs.enable_nuitka }}
+      build_matrix: ${{ steps.matrix.outputs.build_matrix }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build on ARM
+      - name: Resolve variables
+        id: vars
+        env:
+          ENABLE_NUITKA_INPUT: ${{ inputs.enable_nuitka }}
+        run: |
+          python3 << 'EOF' >> $GITHUB_OUTPUT
+          import tomllib, os
+
+          with open('pyproject.toml', 'rb') as f:
+              config = tomllib.load(f)
+
+          app_name = config['project']['name']
+          default_ver = config['project']['version']
+
+          # Resolve version: tag > pyproject.toml default
+          ref = os.environ.get('GITHUB_REF', '')
+          if ref.startswith('refs/tags/'):
+              version = ref.replace('refs/tags/', '').rsplit('/v', 1)[-1]
+          else:
+              version = default_ver
+
+          # Resolve enable_nuitka
+          event = os.environ.get('GITHUB_EVENT_NAME', '')
+          enable_nuitka = 'true' if event != 'workflow_dispatch' else os.environ.get('ENABLE_NUITKA_INPUT', 'true')
+
+          print(f'app_name={app_name}')
+          print(f'version={version}')
+          print(f'enable_nuitka={enable_nuitka}')
+          EOF
+
+      - name: Generate matrix
+        id: matrix
+        run: |
+          ARCHS="${{ inputs.archs || 'armv7l' }}"
+          ARCHS=$(echo "$ARCHS" | tr -d ' ')
+          MATRIX=""
+
+          [[ "$ARCHS" == *"armv7l"* ]]   && MATRIX+='{"arch":"armv7l","qemu_arch":"armv7"},'
+          [[ "$ARCHS" == *"aarch64"* ]] && MATRIX+='{"arch":"aarch64","qemu_arch":"aarch64"},'
+
+          echo "build_matrix=[${MATRIX%,}]" >> $GITHUB_OUTPUT
+
+  build:
+    needs: config
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.config.outputs.build_matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update version
+        env:
+          VERSION: ${{ needs.config.outputs.version }}
+        run: |
+          python3 -c "
+          import tomllib, os
+          with open('pyproject.toml', 'rb') as f:
+              default_ver = tomllib.load(f)['project']['version']
+          version = os.environ['VERSION']
+          if version != default_ver:
+              content = open('pyproject.toml').read()
+              content = content.replace(f'version = \"{default_ver}\"', f'version = \"{version}\"', 1)
+              open('pyproject.toml', 'w').write(content)
+          "
+
+      - name: Build on ${{ matrix.arch }}
         uses: uraimo/run-on-arch-action@v3
         with:
-          arch: aarch64
+          arch: ${{ matrix.qemu_arch }}
           distro: bullseye
+          githubToken: ${{ github.token }}
           install: |
             apt-get update -qq
             apt-get install -y -qq python3 build-essential libffi-dev libssl-dev \
               libbz2-dev libreadline-dev libsqlite3-dev zlib1g-dev \
               wget git file ca-certificates tar gzip gcc g++ make patchelf
           run: |
-            pip3 install -e .
-            pip3 install nuitka=={{ nuitka_version }} ordered-set zstandard
+            # Use piwheels for armv7 pre-compiled wheels
+            if [ "${{ matrix.arch }}" = "armv7l" ]; then
+              export PIP_EXTRA_INDEX_URL="https://www.piwheels.org/simple"
+            fi
 
-            pyapp build linux --arch aarch64
-            pyapp compile linux
+            pip3 install "git+https://github.com/Jzhenli/pyapp.git#egg=pyapp-cli[compile]"
+            pyapp build linux --arch ${{ matrix.arch }}
+
+            if [ "${{ needs.config.outputs.enable_nuitka }}" = "true" ]; then
+              pyapp compile linux
+            fi
+
             pyapp package linux
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: linux-aarch64-package
+          name: ${{ needs.config.outputs.app_name }}-${{ needs.config.outputs.version }}-linux-${{ matrix.arch }}
           path: dist/*.tar.gz
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Linux Build (${{ matrix.arch }})" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ needs.config.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Arch**: ${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Nuitka**: ${{ needs.config.outputs.enable_nuitka }}" >> $GITHUB_STEP_SUMMARY
+{% endraw %}

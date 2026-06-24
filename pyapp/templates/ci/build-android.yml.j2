@@ -1,50 +1,197 @@
-name: Build Android
+{% raw %}name: Build Android App
 
 on:
   push:
-    tags: ['v*']
+    tags:
+      - '*-android/v*'
+      - '*-all/v*'
   workflow_dispatch:
+    inputs:
+      architectures:
+        description: 'Target architectures'
+        required: false
+        type: choice
+        options: [arm64, arm32, 'arm64,arm32']
+        default: 'arm64'
+      enable_nuitka:
+        description: 'Enable Nuitka compilation'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  termux-compile:
-    runs-on: ubuntu-24.04-arm
+  config:
+    runs-on: ubuntu-latest
+    outputs:
+      app_name: ${{ steps.vars.outputs.app_name }}
+      app_module: ${{ steps.vars.outputs.app_module }}
+      version: ${{ steps.vars.outputs.version }}
+      enable_nuitka: ${{ steps.vars.outputs.enable_nuitka }}
+      compile_matrix: ${{ steps.matrix.outputs.compile_matrix }}
+      build_matrix: ${{ steps.matrix.outputs.build_matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve variables
+        id: vars
+        env:
+          ENABLE_NUITKA_INPUT: ${{ inputs.enable_nuitka }}
+        run: |
+          python3 << 'EOF' >> $GITHUB_OUTPUT
+          import tomllib, os
+
+          with open('pyproject.toml', 'rb') as f:
+              config = tomllib.load(f)
+
+          app_name = config['project']['name']
+          app_module = config['tool']['pyapp']['app_module']
+          default_ver = config['project']['version']
+
+          # Resolve version: tag > pyproject.toml default
+          ref = os.environ.get('GITHUB_REF', '')
+          if ref.startswith('refs/tags/'):
+              version = ref.replace('refs/tags/', '').rsplit('/v', 1)[-1]
+          else:
+              version = default_ver
+
+          # Resolve enable_nuitka
+          event = os.environ.get('GITHUB_EVENT_NAME', '')
+          enable_nuitka = 'true' if event != 'workflow_dispatch' else os.environ.get('ENABLE_NUITKA_INPUT', 'true')
+
+          print(f'app_name={app_name}')
+          print(f'app_module={app_module}')
+          print(f'version={version}')
+          print(f'enable_nuitka={enable_nuitka}')
+          EOF
+
+      - name: Generate matrix
+        id: matrix
+        run: |
+          ARCHS="${{ inputs.architectures || 'arm64' }}"
+          ARCHS=$(echo "$ARCHS" | tr -d ' ')
+          COMPILE=""
+          BUILD=""
+
+          [[ "$ARCHS" == *"arm64"* ]] && COMPILE+='{"arch":"arm64","runs_on":"ubuntu-24.04-arm","termux_arch":"aarch64","android_abi":"arm64-v8a"},' && BUILD+='{"arch":"arm64","android_abi":"arm64-v8a","apk_arch":"arm64"},'
+          [[ "$ARCHS" == *"arm32"* ]] && COMPILE+='{"arch":"arm32","runs_on":"ubuntu-24.04-arm","termux_arch":"arm","android_abi":"armeabi-v7a"},' && BUILD+='{"arch":"arm32","android_abi":"armeabi-v7a","apk_arch":"arm32"},'
+
+          echo "compile_matrix=[${COMPILE%,}]" >> $GITHUB_OUTPUT
+          echo "build_matrix=[${BUILD%,}]" >> $GITHUB_OUTPUT
+
+  compile:
+    needs: config
+    if: needs.config.outputs.enable_nuitka == 'true'
+    runs-on: ${{ matrix.runs_on }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.config.outputs.compile_matrix) }}
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Compile in Termux Docker
         run: |
-          docker run --rm -v $PWD:/src termux/termux-docker:aarch64 \
-            bash /src/scripts/termux_compile.sh
+          IMAGE="termux/termux-docker:${{ matrix.termux_arch }}"
+
+          mkdir -p dist && chmod -R 777 dist src/
+
+          docker run --rm -v $PWD:/src "$IMAGE" bash /src/scripts/termux_compile.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: compiled-so
+          name: compiled-${{ matrix.android_abi }}
           path: dist/*.so
+          retention-days: 1
 
-  build-compile-package:
-    needs: termux-compile
+  build:
+    needs: [config, compile]
+    if: >-
+      always() &&
+      needs.config.result == 'success' &&
+      (needs.config.outputs.enable_nuitka != 'true' || needs.compile.result == 'success')
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.config.outputs.build_matrix) }}
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
+        if: needs.config.outputs.enable_nuitka == 'true'
         with:
-          name: compiled-so
-          path: dist
+          name: compiled-${{ matrix.android_abi }}
+          path: dist/${{ matrix.android_abi }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Install pyapp
-        run: pip install -e .
+        run: pip install "git+https://github.com/Jzhenli/pyapp.git#egg=pyapp-cli[compile]"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
       - name: Build
-        run: pyapp build android
+        env:
+          VERSION: ${{ needs.config.outputs.version }}
+        run: |
+          # Update version in pyproject.toml
+          python3 -c "
+          import tomllib, os
+          with open('pyproject.toml', 'rb') as f:
+              default_ver = tomllib.load(f)['project']['version']
+          version = os.environ['VERSION']
+          if version != default_ver:
+              content = open('pyproject.toml').read()
+              content = content.replace(f'version = \"{default_ver}\"', f'version = \"{version}\"', 1)
+              open('pyproject.toml', 'w').write(content)
+          "
+          pyapp build android --arch ${{ matrix.android_abi }}
 
       - name: Compile with precompiled .so
-        run: pyapp compile android --precompiled dist/{{ app_module }}.so
+        if: needs.config.outputs.enable_nuitka == 'true'
+        run: |
+          APP_MODULE="${{ needs.config.outputs.app_module }}"
+          SO_FILE="dist/${{ matrix.android_abi }}/${APP_MODULE}.so"
+
+          [ ! -f "$SO_FILE" ] && { echo "::error::.so not found: $SO_FILE"; exit 1; }
+
+          pyapp compile android --precompiled "$SO_FILE"
 
       - name: Package APK
         run: pyapp package android
 
       - uses: actions/upload-artifact@v4
         with:
-          name: android-apk
+          name: ${{ needs.config.outputs.app_name }}-${{ needs.config.outputs.version }}-android-${{ matrix.apk_arch }}
           path: dist/*.apk
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: log-failure-${{ matrix.android_abi }}
+          path: bundles/android/app/build/reports/
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Android Build (${{ matrix.android_abi }})" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ needs.config.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Arch**: ${{ matrix.android_abi }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Nuitka**: ${{ needs.config.outputs.enable_nuitka }}" >> $GITHUB_STEP_SUMMARY
+{% endraw %}
