@@ -165,7 +165,10 @@ def _generate_python_files(project_dir: Path, name: str, module_name: str, templ
     src_dir = project_dir / "src" / module_name
 
     # __init__.py
-    (src_dir / "__init__.py").write_text(f'"""{name} - 跨平台应用"""\n__version__ = "0.1.0"\n', encoding="utf-8")
+    (src_dir / "__init__.py").write_text(
+        f'"""{name}"""\n__version__ = "0.1.0"\nfrom {module_name}.app import main\n',
+        encoding="utf-8"
+    )
 
     # __main__.py
     (src_dir / "__main__.py").write_text(
@@ -175,9 +178,10 @@ def _generate_python_files(project_dir: Path, name: str, module_name: str, templ
 
     # app.py
     if template == "fastapi":
-        app_content = f'''"""FastAPI 应用"""
+        app_content = f'''"""FastAPI Application"""
 
 import os
+import sys
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -185,72 +189,52 @@ from fastapi.responses import FileResponse, JSONResponse
 
 app = FastAPI(title="{name}")
 
-# 获取 resources 目录路径
-RESOURCES_DIR = Path(__file__).parent / "resources"
 
-# 静态文件目录（构建时从 frontend/dist/ 同步）
+def get_resource_dir() -> Path:
+    mod = sys.modules.get("{module_name}")
+    if mod and hasattr(mod, "_RESOURCE_DIR"):
+        return Path(mod._RESOURCE_DIR) / "resources"
+    return Path(__file__).parent / "resources"
+
+
+RESOURCES_DIR = get_resource_dir()
 STATIC_DIR = RESOURCES_DIR / "static"
-
-# 开发模式检测
 IS_DEV_MODE = os.environ.get("APP_MODE", "production") == "dev"
 
-# 只有目录存在且有内容时才挂载静态文件
-FRONTEND_AVAILABLE = False
-if STATIC_DIR.exists() and any(STATIC_DIR.iterdir()):
+FRONTEND_AVAILABLE = STATIC_DIR.exists() and any(STATIC_DIR.iterdir())
+if FRONTEND_AVAILABLE:
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-    FRONTEND_AVAILABLE = True
-else:
-    if not IS_DEV_MODE:
-        print(f"Warning: Frontend not found at {{STATIC_DIR}}")
+elif not IS_DEV_MODE:
+    print(f"Warning: Frontend not found at {{STATIC_DIR}}")
 
 
 @app.get("/")
 async def index():
-    """返回首页"""
     if FRONTEND_AVAILABLE:
         return FileResponse(STATIC_DIR / "index.html")
-
-    # 开发模式提示
     return JSONResponse({{
         "message": "Frontend not available",
         "mode": "development" if IS_DEV_MODE else "production",
-        "hints": [
-            "For development: cd frontend && npm run dev",
-            "For production: npm run build && pyapp build <platform>",
-            "API documentation: /docs"
-        ]
+        "hints": ["cd frontend && npm run dev", "npm run build && pyapp build <platform>", "/docs"]
     }})
 
 
 @app.get("/api/health")
 async def health():
-    """健康检查"""
-    return {{
-        "status": "ok",
-        "frontend": "available" if FRONTEND_AVAILABLE else "not_built"
-    }}
+    return {{ "status": "ok", "frontend": "available" if FRONTEND_AVAILABLE else "not_built" }}
 
 
 @app.post("/api/restart")
 async def restart():
-    """重启应用（开发模式用）"""
-    import signal
-    import sys
-    import threading
-
+    import signal, threading
     def _restart():
-        # Windows 不支持 SIGTERM，使用 SIGINT 或 sys.exit
-        if sys.platform == "win32":
-            os.kill(os.getpid(), signal.SIGINT)
-        else:
-            os.kill(os.getpid(), signal.SIGTERM)
-
+        sig = signal.SIGINT if sys.platform == "win32" else signal.SIGTERM
+        os.kill(os.getpid(), sig)
     threading.Timer(0.5, _restart).start()
-    return {{"status": "restarting"}}
+    return {{ "status": "restarting" }}
 
 
 def main():
-    """启动应用"""
     import uvicorn
     port = int(os.environ.get("APP_PORT", "18080"))
     uvicorn.run(app, host="0.0.0.0", port=port)
