@@ -32,7 +32,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install pyapp
-        run: pip install "git+https://github.com/Jzhenli/pyapp.git#egg=pyapp-cli[compile]"
+        run: pip install "pyapp-cli[compile] @ git+https://github.com/Jzhenli/pyapp.git"
 
       - name: Resolve variables and update version
         id: vars
