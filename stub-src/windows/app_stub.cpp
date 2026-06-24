@@ -440,8 +440,10 @@ static bool start_child_process() {
     STARTUPINFOA si = { sizeof(si) };
     PROCESS_INFORMATION pi = {};
 
+    // Work directory must be runtime dir for _pth relative paths to work correctly
+    // Embeddable Python ignores PYTHONPATH, only uses _pth file
     char workDir[MAX_PATH];
-    snprintf(workDir, sizeof(workDir), "%s\\%s\\app", g_exeDir, g_cfg.version_dir);
+    snprintf(workDir, sizeof(workDir), "%s\\runtime", g_exeDir);
 
     BOOL success = CreateProcessA(
         NULL, cmdLine, NULL, NULL, FALSE,

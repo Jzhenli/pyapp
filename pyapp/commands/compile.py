@@ -21,43 +21,20 @@ COMPILED_EXTENSIONS = {
 }
 
 # 桩文件模板
-# 基于 hello 项目已验证的 INIT_PY_TEMPLATE 改进（Nuitka 2.7.12 已验证）
-# 改进点：
-# 1. 白名单保留必要 dunder（__version__/__all__/__doc__ 等），避免子模块导入异常
-# 2. 对 sys.modules 查找加 fallback，避免 KeyError
-# 3. 移除脆弱的 meta_path 排序 hack，改用显式 spec_from_file_location 加载
-# 注意：如遇兼容性问题，可回退到 hello 项目原始版本（见 scripts/nuitka_compile.py）
+# 基于 hello 项目已验证的 INIT_PY_TEMPLATE (Nuitka 2.7.12 已验证)
+# 关键设计：利用 sys.modules 中已存在的部分初始化模块，避免循环导入
+# 重要：前后两次设置 _RESOURCE_DIR，确保不被 update 覆盖
 INIT_PY_TEMPLATE = '''\
 import sys, importlib.util as u, os
-_PKG = "{pkg_name}"
-_MOD_FILE = "{mod_file}"
-_d = os.path.dirname(os.path.abspath(__file__))
-
-# 显式加载编译产物，不依赖 meta_path 排序
-_sp = u.spec_from_file_location(_PKG, os.path.join(_d, _MOD_FILE))
-_lib = u.module_from_spec(_sp)
-_sp.loader.exec_module(_lib)
-
-# 白名单保留必要 dunder，避免过滤 __version__/__all__/__doc__
-_KEEP_DUNDER = {{"__version__", "__all__", "__doc__", "__author__", "__email__"}}
-
-# 获取或创建当前包模块（加 fallback 避免 KeyError）
-_m = sys.modules.get(_PKG)
-if _m is None:
-    import importlib.machinery as mach
-    _spec = mach.ModuleSpec(_PKG, loader=None, is_package=True)
-    _m = type(sys)(_PKG)
-    _m.__spec__ = _spec
-    sys.modules[_PKG] = _m
-
-# 合并编译模块的属性（保留白名单 dunder + 普通属性）
-for _k, _v in vars(_lib).items():
-    if _k in _KEEP_DUNDER or not _k.startswith("__"):
-        setattr(_m, _k, _v)
-
-_m.__file__ = __file__
-_m._RESOURCE_DIR = _d
-_lib._RESOURCE_DIR = _d
+d = os.path.dirname(os.path.abspath(__file__))
+m, s, m._RESOURCE_DIR = sys.modules["{pkg_name}"], sys.modules["{pkg_name}"].__spec__, d
+sp = u.spec_from_file_location("{pkg_name}", os.path.join(d, "{mod_file}"))
+lib = u.module_from_spec(sp); sp.loader.exec_module(lib)
+sys.meta_path.sort(key=lambda f: type(f).__name__ == "nuitka_module_loader")
+m.__dict__.update({{k: v for k, v in vars(lib).items() if k in {{ "__version__", "__all__" }} or k[:2] != "__"}})
+m.__spec__, m.__file__, m._RESOURCE_DIR = s, __file__, d
+lib._RESOURCE_DIR = d
+sys.modules["{pkg_name}"] = m
 '''
 
 MAIN_PY_TEMPLATE = '''\
