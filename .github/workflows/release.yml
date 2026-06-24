@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 添加这一行，赋予创建 Release 的权限
     steps:
       - uses: actions/checkout@v4
 
