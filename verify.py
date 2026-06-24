@@ -78,7 +78,7 @@ def test_import_commands():
     from pyapp.commands.create import create_platform
     from pyapp.commands.build import build_platform
     from pyapp.commands.run import run_platform
-    from pyapp.commands.dev import dev_platform
+    from pyapp.commands.compile import compile_platform
     from pyapp.commands.package import package_platform
     from pyapp.commands.deploy import deploy_platform
     from pyapp.commands.setup import setup_platform

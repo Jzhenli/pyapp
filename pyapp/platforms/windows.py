@@ -60,7 +60,7 @@ class WindowsPlatform(BasePlatform):
 
         self.logger.success(f"Windows project created at {bundle_dir}")
 
-    def build(self, project_dir: Path, config: Dict[str, Any], build_type: str = "debug") -> BuildResult:
+    def build(self, project_dir: Path, config: Dict[str, Any], build_type: str = "debug", arch=None) -> BuildResult:
         """构建 Windows 安装包"""
         try:
             bundle_dir = project_dir / "bundles" / "windows"
@@ -132,17 +132,13 @@ class WindowsPlatform(BasePlatform):
             # 6.6 渲染 app.ini
             self._render_all_templates(project_dir, config)
 
-            # 7. 打包 ZIP
-            self.logger.step(7, 7, "Packaging ZIP")
-            dist_dir = self.ensure_dist_dir(project_dir)
-            zip_filename = f"{app_name}-{version}-windows-x86_64.zip"
-            zip_path = dist_dir / zip_filename
+            # 7. 写入构建元数据
+            self.logger.step(7, 7, "Writing build metadata")
+            self._write_build_meta(bundle_dir, "windows", config, arch="x86_64", build_type=build_type)
 
-            self._create_zip(bundle_dir, zip_path, zip_filename.replace(".zip", ""))
+            self.logger.success(f"Build prepared at {bundle_dir}")
 
-            self.logger.success(f"Package: {zip_path}")
-
-            return BuildResult(success=True, output_path=zip_path)
+            return BuildResult(success=True, output_path=bundle_dir)
 
         except Exception as e:
             self.logger.error(f"Build failed: {e}", exc_info=True)
@@ -180,74 +176,40 @@ class WindowsPlatform(BasePlatform):
 
         self.logger.error("No executable found. Run 'pyapp build windows' first.")
 
-    def dev(self, project_dir: Path, config: Dict[str, Any]) -> None:
-        """开发模式（文件监听 + 热重载）"""
-        from ..core.watcher import FileWatcher
-        from ..core.device import DeviceManager
-
-        device_manager = DeviceManager()
-        app_name = self.get_app_name(config)
-        version = self.get_app_version(config)
-        version_dir = f"{app_name}-{version}"
-
-        # 先构建
-        self.logger.info("Building app for development...")
-        result = self.build(project_dir, config)
-        if not result.success:
-            return
-
-        # 启动应用（使用 --console 模式方便开发调试）
-        exe_path = project_dir / "bundles" / "windows" / f"{app_name}.exe"
-        if exe_path.exists():
-            subprocess.Popen([str(exe_path), "--console"], cwd=str(exe_path.parent))
-            self.logger.info(f"Started {exe_path} --console")
-        else:
-            self.run(project_dir, config)
-
-        # 启动文件监听
-        src_dir = project_dir / "src"
-        bundle_app_dir = project_dir / "bundles" / "windows" / version_dir / "app"
-
-        def on_file_change(file_path: str):
-            self.logger.info(f"Change detected: {file_path}")
-            local_path = Path(file_path)
-            try:
-                rel_path = local_path.relative_to(src_dir)
-            except ValueError:
-                return
-
-            # 复制文件到 bundle 目录
-            target_path = bundle_app_dir / rel_path
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(local_path, target_path)
-
-            # 发送重启信号
-            port = self.get_port(config)
-            if device_manager.restart_windows_app("127.0.0.1", port):
-                self.logger.success("App restarted")
-            else:
-                self.logger.warning("Failed to restart app via API, manual restart may be needed")
-
-        watcher = FileWatcher(src_dir, on_file_change)
-        watcher.start()
-
-        self.logger.info("Development mode active. Press Ctrl+C to stop.")
-        try:
-            watcher.wait()
-        except KeyboardInterrupt:
-            watcher.stop()
-
     def package(self, project_dir: Path, config: Dict[str, Any]) -> BuildResult:
-        """打包发布版 Windows 安装包"""
-        # 构建发布版
-        result = self.build(project_dir, config, build_type="release")
-        if not result.success:
-            return result
+        """打包 Windows 分发文件（不再调用 build）"""
+        try:
+            bundle_dir = project_dir / "bundles" / "windows"
 
-        # Windows 签名（可选）
-        # signtool sign /f cert.pfx /p password app.exe
-        self.logger.info("Release package created (unsigned)")
-        return result
+            if not bundle_dir.exists():
+                raise BuildError(
+                    f"Bundle directory not found: {bundle_dir}",
+                    "Run 'pyapp build windows' first"
+                )
+
+            # 从 build.meta.json 读取 arch 和元数据
+            meta = self._read_build_meta(bundle_dir)
+            app_name = meta["app_name"]
+            version = meta["version"]
+            arch = meta["arch"]
+
+            # 打包 ZIP
+            dist_dir = self.ensure_dist_dir(project_dir)
+            zip_filename = f"{app_name}-{version}-windows-{arch}.zip"
+            zip_path = dist_dir / zip_filename
+
+            self._create_zip(bundle_dir, zip_path, zip_filename.replace(".zip", ""))
+
+            self.logger.success(f"Package created: {zip_path}")
+
+            # 签名（可选，后续实现）
+            # if sign_config:
+            #     self._sign_exe(bundle_dir / f"{app_name}.exe")
+
+            return BuildResult(success=True, output_path=zip_path)
+
+        except Exception as e:
+            return BuildResult(success=False, error_message=str(e))
 
     # ========== Stub 管理（预编译模式） ==========
 

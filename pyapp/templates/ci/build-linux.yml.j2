@@ -1,0 +1,35 @@
+name: Build Linux
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-aarch64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build on ARM
+        uses: uraimo/run-on-arch-action@v3
+        with:
+          arch: aarch64
+          distro: bullseye
+          install: |
+            apt-get update -qq
+            apt-get install -y -qq python3 build-essential libffi-dev libssl-dev \
+              libbz2-dev libreadline-dev libsqlite3-dev zlib1g-dev \
+              wget git file ca-certificates tar gzip gcc g++ make patchelf
+          run: |
+            pip3 install -e .
+            pip3 install nuitka=={{ nuitka_version }} ordered-set zstandard
+
+            pyapp build linux --arch aarch64
+            pyapp compile linux
+            pyapp package linux
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-aarch64-package
+          path: dist/*.tar.gz

@@ -1,0 +1,50 @@
+name: Build Android
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  termux-compile:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile in Termux Docker
+        run: |
+          docker run --rm -v $PWD:/src termux/termux-docker:aarch64 \
+            bash /src/scripts/termux_compile.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compiled-so
+          path: dist/*.so
+
+  build-compile-package:
+    needs: termux-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: compiled-so
+          path: dist
+
+      - name: Install pyapp
+        run: pip install -e .
+
+      - name: Build
+        run: pyapp build android
+
+      - name: Compile with precompiled .so
+        run: pyapp compile android --precompiled dist/{{ app_module }}.so
+
+      - name: Package APK
+        run: pyapp package android
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: dist/*.apk

@@ -49,7 +49,15 @@ def create(platform, project_dir, arch):
 @click.option("--arch", type=str, default=None,
               help="目标架构。Linux: x86_64, aarch64, armv7l。Android: arm64-v8a, armeabi-v7a, x86_64 (多个用逗号分隔)")
 def build(platform, build_type, project_dir, no_create, arch):
-    """构建平台安装包
+    """准备平台构建目录（不打包）
+
+    此命令准备 bundles 目录结构，包括：
+    - Python 运行时
+    - 应用源码
+    - pip 依赖
+    - 启动脚本
+
+    后续可执行 compile（可选）和 package 完成打包。
 
     示例:
       pyapp build linux                         # 构建 Linux x86_64
@@ -62,29 +70,87 @@ def build(platform, build_type, project_dir, no_create, arch):
     build_platform(platform, build_type, Path(project_dir) if project_dir else None, no_create, arch)
 
 
+@main.command("compile")
+@click.argument("platform", type=click.Choice(["windows", "linux", "android"]))
+@click.option("-d", "--project-dir", type=click.Path(exists=True), help="项目目录")
+@click.option("--precompiled", type=click.Path(exists=True),
+              help="预编译的 .so 文件路径（Android 专用，Termux 编译产物）")
+def compile_cmd(platform, project_dir, precompiled):
+    """编译 Python 源码为 pyd/so 文件（需要先 build）
+
+    使用 Nuitka 将 Python 源码编译为原生二进制，保护源码并提升性能。
+
+    注意：
+    - Windows/Linux: 在本机执行 Nuitka 编译
+    - Android: 需要先通过 Termux Docker 编译，再使用 --precompiled 指定 .so 文件
+    - compile 不支持 "all" 平台（编译需平台特定环境）
+
+    前置条件：
+    - Windows/Linux: 安装 Nuitka: pip install nuitka ordered-set zstandard
+    - Android: 先执行 Termux Docker 编译生成 .so 文件
+    - 所有平台: 先执行 pyapp build
+
+    示例:
+      # Windows/Linux
+      pyapp build windows
+      pyapp compile windows
+      pyapp package windows
+
+      # Android（在 GitHub Actions 中）
+      pyapp build android
+      pyapp compile android --precompiled dist/app.so
+      pyapp package android
+    """
+    from .commands.compile import compile_platform
+    compile_platform(platform, Path(project_dir) if project_dir else None,
+                     Path(precompiled) if precompiled else None)
+
+
 @main.command()
 @click.argument("platform", type=click.Choice(["android", "windows", "linux"]))
 @click.option("-d", "--project-dir", type=click.Path(exists=True), help="项目目录")
-def run(platform, project_dir):
-    """安装并运行应用"""
+@click.option("-u", "--update", is_flag=True,
+              help="更新应用源码（不更新依赖）")
+@click.option("-r", "--rebuild", is_flag=True,
+              help="重新安装依赖（包含源码更新）")
+def run(platform, project_dir, update, rebuild):
+    """运行应用
+
+    如果 bundles 目录不存在，会先自动执行 build。
+    自动同步 frontend/.env.development 的 VITE_API_PORT。
+
+    示例:
+      pyapp run windows              # 直接运行
+      pyapp run windows -u           # 更新源码后运行
+      pyapp run windows -ur          # 更新依赖和源码后运行
+    """
     from .commands.run import run_platform
-    run_platform(platform, Path(project_dir) if project_dir else None)
-
-
-@main.command()
-@click.argument("platform", type=click.Choice(["android", "windows", "linux"]))
-@click.option("-d", "--project-dir", type=click.Path(exists=True), help="项目目录")
-def dev(platform, project_dir):
-    """开发模式（文件监听 + 热重载）"""
-    from .commands.dev import dev_platform
-    dev_platform(platform, Path(project_dir) if project_dir else None)
+    run_platform(platform, Path(project_dir) if project_dir else None,
+                 update=update, rebuild=rebuild)
 
 
 @main.command()
 @click.argument("platform", type=click.Choice(["android", "windows", "linux", "all"]))
 @click.option("-d", "--project-dir", type=click.Path(exists=True), help="项目目录")
 def package(platform, project_dir):
-    """打包发布版"""
+    """打包分发文件（需要先 build，可选 compile）
+
+    将 bundles 目录打包为分发文件：
+    - Windows: ZIP
+    - Linux: tar.gz
+    - Android: APK
+
+    前置条件：先执行 pyapp build
+
+    示例:
+      pyapp build windows
+      pyapp package windows
+
+      # 或带编译
+      pyapp build windows
+      pyapp compile windows
+      pyapp package windows
+    """
     from .commands.package import package_platform
     package_platform(platform, Path(project_dir) if project_dir else None)
 

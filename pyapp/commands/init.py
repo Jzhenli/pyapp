@@ -49,8 +49,14 @@ def init_project(name: str, template: str = "fastapi", output_dir: Optional[str]
     logger.info("")
     logger.info("Next steps:")
     logger.info(f"  cd {name}")
-    logger.info("  pyapp create android    # Create Android project")
-    logger.info("  pyapp dev android       # Start development mode")
+    logger.info("  pyapp build windows      # Build for Windows")
+    logger.info("  pyapp run windows        # Run the app")
+    logger.info("  pyapp run windows -ur    # Update deps and run")
+    logger.info("")
+    logger.info("Release flow:")
+    logger.info("  pyapp build windows      # Prepare bundles")
+    logger.info("  pyapp compile windows    # Compile with Nuitka (optional)")
+    logger.info("  pyapp package windows    # Package distributable")
 
 
 def _create_project_structure(project_dir: Path, name: str, module_name: str, template: str):
@@ -84,6 +90,9 @@ def _create_project_structure(project_dir: Path, name: str, module_name: str, te
     # 生成前端模板（如果选择 fastapi 模板）
     if template == "fastapi":
         _generate_frontend_template(project_dir, name, module_name)
+
+    # 生成 CI 脚本和 Termux 编译脚本
+    _generate_ci_workflows(project_dir, name, module_name)
 
 
 def _generate_pyproject(project_dir: Path, name: str, module_name: str, template: str):
@@ -304,16 +313,28 @@ A cross-platform application built with PyApp.
 ## Development
 
 ```bash
-# Development mode
-pyapp dev android
-
-# Build
-pyapp build android
+# Build and run
 pyapp build windows
-pyapp build linux
+pyapp run windows
 
-# Build all platforms
-pyapp build all
+# Update source code and run
+pyapp run windows -u
+
+# Rebuild dependencies and run
+pyapp run windows -ur
+```
+
+## Release
+
+```bash
+# Build → (optional) compile → package
+pyapp build windows
+pyapp compile windows    # optional, requires Nuitka
+pyapp package windows
+
+# Cross-platform
+pyapp build linux --arch aarch64
+pyapp build android --arch arm64-v8a
 ```
 
 ## Project Structure
@@ -327,6 +348,8 @@ pyapp build all
 │   ├── app.py              # FastAPI application
 │   └── resources/          # Static resources
 ├── frontend/               # Frontend project (optional)
+├── .github/workflows/      # CI scripts (auto-generated)
+├── scripts/                # Termux compile script (auto-generated)
 └── bundles/                # Platform build output
 ```
 """
@@ -454,3 +477,42 @@ createApp(App).mount('#app')
 </html>
 """
     (frontend_dir / "index.html").write_text(index_html, encoding="utf-8")
+
+
+def _generate_ci_workflows(project_dir: Path, name: str, module_name: str):
+    """生成 GitHub Actions CI 脚本和 Termux 编译脚本"""
+    logger = get_logger()
+
+    ci_template_dir = Path(__file__).parent.parent / "templates" / "ci"
+    if not ci_template_dir.exists():
+        logger.warning(f"CI template directory not found: {ci_template_dir}, skipping CI generation")
+        return
+
+    jinja_env = Environment(loader=FileSystemLoader(str(ci_template_dir)))
+
+    # 渲染上下文：app_module 对应模板中的 {{ app_module }}
+    render_ctx = {
+        "name": name,
+        "module_name": module_name,
+        "app_module": module_name,  # 模板中使用 {{ app_module }}
+        "python_version": "3.11",   # Termux Python 版本
+        "nuitka_version": "2.7.12", # 已验证的 Nuitka 版本
+    }
+
+    # 1. 生成 CI workflow 脚本
+    workflows_dir = project_dir / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+    for template_name in ["build-windows.yml.j2", "build-linux.yml.j2", "build-android.yml.j2"]:
+        jinja_template = jinja_env.get_template(template_name)
+        content = jinja_template.render(**render_ctx)
+        output_name = template_name.replace(".j2", "")
+        (workflows_dir / output_name).write_text(content, encoding="utf-8")
+    logger.info("Generated CI workflows: .github/workflows/")
+
+    # 2. 生成 Termux 编译脚本（使用 Unix 行符，确保 Linux/Termux 兼容）
+    scripts_dir = project_dir / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    termux_template = jinja_env.get_template("termux_compile.sh.j2")
+    termux_content = termux_template.render(**render_ctx)
+    (scripts_dir / "termux_compile.sh").write_text(termux_content, encoding="utf-8", newline="\n")
+    logger.info("Generated Termux compile script: scripts/termux_compile.sh")

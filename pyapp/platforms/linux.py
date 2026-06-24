@@ -156,17 +156,13 @@ class LinuxPlatform(BasePlatform):
             python_major_minor = ".".join(python_version.split(".")[:2])
             self._generate_run_script(bundle_dir, app_name, app_module, version, python_major_minor)
 
-            # 7. 打包 tar.gz
-            self.logger.step(6, 6, "Packaging tar.gz")
-            dist_dir = self.ensure_dist_dir(project_dir)
-            tar_filename = f"{app_name}-{version}-linux-{arch}.tar.gz"
-            tar_path = dist_dir / tar_filename
+            # 6. 写入构建元数据
+            self.logger.step(6, 6, "Writing build metadata")
+            self._write_build_meta(bundle_dir, "linux", config, arch=arch, build_type=build_type)
 
-            self._create_tarball(bundle_dir, tar_path, tar_filename.replace(".tar.gz", ""))
+            self.logger.success(f"Build prepared at {bundle_dir}")
 
-            self.logger.success(f"Package: {tar_path}")
-
-            return BuildResult(success=True, output_path=tar_path)
+            return BuildResult(success=True, output_path=bundle_dir)
 
         except Exception as e:
             self.logger.error(f"Build failed: {e}", exc_info=True)
@@ -198,67 +194,34 @@ class LinuxPlatform(BasePlatform):
         )
         self.logger.info(f"Started app (PID: {process.pid})")
 
-    def dev(self, project_dir: Path, config: Dict[str, Any]) -> None:
-        """开发模式（文件监听 + 热重载）"""
-        from ..core.watcher import FileWatcher
-        from ..core.device import DeviceManager
-
-        device_manager = DeviceManager()
-        app_name = self.get_app_name(config)
-        version = self.get_app_version(config)
-        version_dir = f"{app_name}-{version}"
-        service_name = config.get("tool", {}).get("pyapp", {}).get("linux", {}).get(
-            "service_name", app_name.replace("_", "-")
-        )
-
-        # 先构建
-        self.logger.info("Building app for development...")
-        result = self.build(project_dir, config)
-        if not result.success:
-            return
-
-        # 启动应用
-        self.run(project_dir, config)
-
-        # 启动文件监听
-        src_dir = project_dir / "src"
-        bundle_app_dir = project_dir / "bundles" / "linux" / version_dir / "app"
-
-        def on_file_change(file_path: str):
-            self.logger.info(f"Change detected: {file_path}")
-            local_path = Path(file_path)
-            try:
-                rel_path = local_path.relative_to(src_dir)
-            except ValueError:
-                return
-
-            # 复制文件到 bundle 目录
-            target_path = bundle_app_dir / rel_path
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(local_path, target_path)
-
-            # 重启服务
-            self.logger.info("Restarting application...")
-            # 如果是本地开发，直接重启进程
-            self._restart_local_app(project_dir, config)
-
-        watcher = FileWatcher(src_dir, on_file_change)
-        watcher.start()
-
-        self.logger.info("Development mode active. Press Ctrl+C to stop.")
-        try:
-            watcher.wait()
-        except KeyboardInterrupt:
-            watcher.stop()
-
     def package(self, project_dir: Path, config: Dict[str, Any]) -> BuildResult:
-        """打包发布版 Linux 安装包"""
-        result = self.build(project_dir, config, build_type="release")
-        if not result.success:
-            return result
+        """打包 Linux 分发文件（不再调用 build）"""
+        try:
+            bundle_dir = project_dir / "bundles" / "linux"
 
-        self.logger.info("Release package created")
-        return result
+            if not bundle_dir.exists():
+                raise BuildError(
+                    f"Bundle directory not found: {bundle_dir}",
+                    "Run 'pyapp build linux' first"
+                )
+
+            # 从 build.meta.json 读取 arch 和元数据
+            meta = self._read_build_meta(bundle_dir)
+            app_name = meta["app_name"]
+            version = meta["version"]
+            arch = meta["arch"]
+
+            # 打包 tar.gz
+            dist_dir = self.ensure_dist_dir(project_dir)
+            tar_path = dist_dir / f"{app_name}-{version}-linux-{arch}.tar.gz"
+            self._create_tarball(bundle_dir, tar_path, f"{app_name}-{version}-linux-{arch}")
+
+            self.logger.success(f"Package created: {tar_path}")
+
+            return BuildResult(success=True, output_path=tar_path)
+
+        except Exception as e:
+            return BuildResult(success=False, error_message=str(e))
 
     def _generate_run_script(self, bundle_dir: Path, app_name: str, app_module: str, version: str, python_version: str = "3.10"):
         """生成运行脚本"""

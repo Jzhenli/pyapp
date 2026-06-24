@@ -1,5 +1,6 @@
 """平台抽象基类"""
 
+import json
 import re
 import shutil
 import subprocess
@@ -54,17 +55,22 @@ class BasePlatform(ABC):
         pass
 
     @abstractmethod
-    def build(self, project_dir: Path, config: Dict[str, Any], build_type: str = "debug") -> BuildResult:
+    def build(self, project_dir: Path, config: Dict[str, Any],
+              build_type: str = "debug", arch=None) -> BuildResult:
         """
-        构建平台包
+        准备平台构建目录（不打包）
 
         Args:
             project_dir: 项目根目录
             config: 解析后的配置
             build_type: debug 或 release
+            arch: 目标架构
+                - Windows: 忽略（固定 x86_64）
+                - Linux: str (x86_64/aarch64/armv7l)
+                - Android: list (["arm64-v8a"])
 
         Returns:
-            构建结果
+            BuildResult.output_path: bundles/{platform}/ 目录路径
         """
         pass
 
@@ -76,18 +82,39 @@ class BasePlatform(ABC):
         pass
 
     @abstractmethod
-    def dev(self, project_dir: Path, config: Dict[str, Any]) -> None:
+    def package(self, project_dir: Path, config: Dict[str, Any]) -> BuildResult:
         """
-        开发模式（文件监听 + 热重载）
+        打包分发文件（不再调用 build()）
+
+        从 bundles/{platform}/build.meta.json 读取 arch 和 build_type。
         """
         pass
 
-    @abstractmethod
-    def package(self, project_dir: Path, config: Dict[str, Any]) -> BuildResult:
-        """
-        打包发布版
-        """
-        pass
+    # ===== 构建元数据 =====
+
+    def _write_build_meta(self, bundle_dir: Path, platform: str, config: Dict[str, Any],
+                          arch, build_type: str) -> None:
+        """写入构建元数据，供 package 阶段读取"""
+        meta = {
+            "platform": platform,
+            "arch": arch if isinstance(arch, str) else (arch or []),
+            "build_type": build_type,
+            "app_name": self.get_app_name(config),
+            "version": self.get_app_version(config),
+        }
+        (bundle_dir / "build.meta.json").write_text(
+            json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def _read_build_meta(self, bundle_dir: Path) -> dict:
+        """读取构建元数据"""
+        meta_path = bundle_dir / "build.meta.json"
+        if not meta_path.exists():
+            raise BuildError(
+                f"Build metadata not found: {meta_path}",
+                "Run 'pyapp build' first"
+            )
+        return json.loads(meta_path.read_text(encoding="utf-8"))
 
     # ===== 公共方法 =====
 

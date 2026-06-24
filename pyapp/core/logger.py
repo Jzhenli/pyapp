@@ -114,7 +114,8 @@ class PyAppLogger:
 
     def success(self, message: str):
         """记录成功信息"""
-        self.logger.info(f"✓ {message}")
+        # 使用 ASCII 兼容的符号，避免 Windows GBK 编码问题
+        self.logger.info(f"[OK] {message}")
 
     def step(self, step_num: int, total_steps: int, message: str):
         """

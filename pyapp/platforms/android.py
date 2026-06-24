@@ -232,110 +232,24 @@ class AndroidPlatform(BasePlatform):
                 self.create(project_dir, config, arch=abi_filters)
 
             # 3. 同步 Python 源码到 Chaquopy 默认位置
-            self.logger.step(1, 6, "Syncing Python source code")
+            self.logger.step(1, 4, "Syncing Python source code")
             self._sync_python_source(project_dir, bundle_dir, config)
 
             # 4. 同步前端资源
-            self.logger.step(2, 6, "Syncing frontend resources")
+            self.logger.step(2, 4, "Syncing frontend resources")
             self._sync_frontend_dist(project_dir, bundle_dir, config)
 
             # 5. 更新 build.gradle.kts 中的依赖配置
-            self.logger.step(3, 6, "Configuring Chaquopy dependencies")
+            self.logger.step(3, 4, "Configuring Chaquopy dependencies")
             self._update_chaquopy_dependencies(bundle_dir, config)
 
-            # 6. 运行 Gradle 构建
-            self.logger.step(4, 6, "Running Gradle build")
-            self.logger.info(f"Target architectures: {', '.join(abi_filters)}")
-            gradle_cmd = "gradlew.bat" if os.name == "nt" else "gradlew"
-            gradle_path = bundle_dir / gradle_cmd
+            # 6. 写入构建元数据（含 build_type，供 package 阶段决定 Gradle 任务）
+            self.logger.step(4, 4, "Writing build metadata")
+            self._write_build_meta(bundle_dir, "android", config, arch=abi_filters, build_type=build_type)
 
-            build_task = "assembleDebug" if build_type == "debug" else "assembleRelease"
+            self.logger.success(f"Build prepared at {bundle_dir}")
 
-            # 确保环境变量传递给子进程
-            env = os.environ.copy()
-            if "JAVA_HOME" not in env or not Path(env["JAVA_HOME"]).exists():
-                jdk_base_dir = Path.home() / ".android-jdk"
-                if jdk_base_dir.exists():
-                    # 查找实际的 JDK 目录（可能在子目录中）
-                    for d in jdk_base_dir.iterdir():
-                        if d.is_dir() and ((d / "bin" / "java.exe").exists() or (d / "bin" / "java").exists()):
-                            env["JAVA_HOME"] = str(d)
-                            break
-            if "ANDROID_HOME" not in env:
-                sdk_dir = Path.home() / ".android-sdk"
-                if sdk_dir.exists():
-                    env["ANDROID_HOME"] = str(sdk_dir)
-
-            # 预下载 Gradle 发行版（用 Python 下载避免 Java SSL 证书问题）
-            self._preload_gradle_distribution(bundle_dir, env)
-            
-            # 使用 --console plain 让 Gradle 输出更清晰
-            result = subprocess.run(
-                [str(gradle_path), "--console", "plain", build_task],
-                cwd=str(bundle_dir),
-                capture_output=True,
-                text=True,
-                env=env,
-            )
-
-            # 输出 Gradle 结果
-            if result.stdout:
-                # 只显示关键信息
-                for line in result.stdout.split("\n"):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    # 显示 Chaquopy 架构安装信息
-                    if "Chaquopy: Installing for" in line:
-                        arch = line.split("Installing for")[-1].strip()
-                        self.logger.info(f"")
-                        self.logger.info(f"Installing packages for {arch}:")
-                    # 显示 Successfully installed 行（包含包名和版本）
-                    elif line.startswith("Successfully installed "):
-                        packages = line[len("Successfully installed "):].strip()
-                        for pkg in packages.split():
-                            self.logger.info(f"  {pkg}")
-                    # 显示 wheel 下载信息（包含完整名称、版本和架构）
-                    elif line.startswith("Downloading "):
-                        self.logger.info(f"  {line}")
-                    # 显示任务执行、成功/失败等
-                    elif any(keyword in line for keyword in [
-                        "BUILD", "FAILED", "SUCCESS", "actionable"
-                    ]):
-                        self.logger.info(f"  {line}")
-
-            if result.returncode != 0:
-                # 显示错误信息
-                if result.stderr:
-                    self.logger.error(result.stderr)
-                raise BuildError(
-                    f"Gradle build failed",
-                    "Check the Gradle output for details"
-                )
-
-            # 7. 复制 APK 到 dist/
-            self.logger.step(5, 6, "Copying APK to dist/")
-            dist_dir = self.ensure_dist_dir(project_dir)
-            app_name = self.get_app_name(config)
-            version = self.get_app_version(config)
-
-            apk_pattern = "*debug*.apk" if build_type == "debug" else "*release*.apk"
-            apk_files = list((bundle_dir / "app" / "build" / "outputs" / "apk").rglob(apk_pattern))
-
-            if not apk_files:
-                raise BuildError("APK not found after build")
-
-            apk_path = apk_files[0]
-            # 文件名格式: {app_name}-{version}-android-{arch}.apk
-            # 多架构时用下划线连接，如 arm64_v8a_armeabi_v7a
-            arch_suffix = "_".join(a.replace("-", "_") for a in abi_filters)
-            dest_apk = dist_dir / f"{app_name}-{version}-android-{arch_suffix}.apk"
-            shutil.copy2(apk_path, dest_apk)
-
-            self.logger.step(6, 6, "Build complete")
-            self.logger.success(f"APK: {dest_apk}")
-
-            return BuildResult(success=True, output_path=dest_apk)
+            return BuildResult(success=True, output_path=bundle_dir)
 
         except (BuildError, PyAppEnvironmentError) as e:
             self.logger.error(str(e))
@@ -397,103 +311,138 @@ class AndroidPlatform(BasePlatform):
         # 启动应用
         device_manager.adb_start_app(package_name, device)
 
-    def dev(self, project_dir: Path, config: Dict[str, Any]) -> None:
-        """开发模式（文件监听 + 热重载）"""
-        from ..core.device import DeviceManager
-        from ..core.watcher import FileWatcher
-
-        device_manager = DeviceManager()
-        app_name = self.get_app_name(config)
-        package_name = config.get("tool", {}).get("pyapp", {}).get("android", {}).get(
-            "package_name", f"com.example.{app_name}"
-        )
-
-        # 先构建并安装
-        self.logger.info("Building and installing app for development...")
-        self.run(project_dir, config)
-
-        # 检查设备
-        devices = device_manager.adb_devices()
-        device = devices[0] if devices else None
-        if not device:
-            self.logger.error("No Android device connected")
-            return
-
-        # 启动文件监听
-        src_dir = project_dir / "src"
-
-        def on_file_change(file_path: str):
-            self.logger.info(f"Change detected: {file_path}")
-            # 推送文件到设备
-            local_path = Path(file_path)
-            # 计算相对路径
-            try:
-                rel_path = local_path.relative_to(src_dir)
-            except ValueError:
-                return
-
-            remote_path = f"/data/data/{package_name}/files/app/{rel_path}"
-            device_manager.adb_push(local_path, remote_path, device)
-
-            # 重启应用
-            device_manager.adb_force_stop(package_name, device)
-            device_manager.adb_start_app(package_name, device)
-            self.logger.success("App restarted")
-
-        watcher = FileWatcher(src_dir, on_file_change)
-        watcher.start()
-
-        self.logger.info("Development mode active. Press Ctrl+C to stop.")
-        try:
-            watcher.wait()
-        except KeyboardInterrupt:
-            watcher.stop()
-
     def package(self, project_dir: Path, config: Dict[str, Any]) -> BuildResult:
-        """打包发布版 APK（签名）"""
-        # 构建发布版
-        result = self.build(project_dir, config, build_type="release")
-        if not result.success:
-            return result
+        """打包 Android APK（运行 Gradle + 签名，不再调用 build）"""
+        try:
+            bundle_dir = project_dir / "bundles" / "android"
 
-        # 签名检查
-        keystore_path = os.environ.get("ANDROID_KEYSTORE_PATH")
-        if not keystore_path:
-            self.logger.warning(
-                "ANDROID_KEYSTORE_PATH not set, APK is unsigned. "
-                "Set environment variable for signed release builds."
+            if not bundle_dir.exists():
+                raise BuildError(
+                    f"Bundle directory not found: {bundle_dir}",
+                    "Run 'pyapp build android' first"
+                )
+
+            # 从 build.meta.json 读取 arch 和 build_type
+            meta = self._read_build_meta(bundle_dir)
+            app_name = meta["app_name"]
+            version = meta["version"]
+            abi_filters = meta["arch"]
+            build_type = meta["build_type"]
+
+            # 运行 Gradle 构建
+            build_task = "assembleDebug" if build_type == "debug" else "assembleRelease"
+            gradle_cmd = "gradlew.bat" if os.name == "nt" else "gradlew"
+            gradle_path = bundle_dir / gradle_cmd
+
+            env = os.environ.copy()
+            if "JAVA_HOME" not in env or not Path(env["JAVA_HOME"]).exists():
+                jdk_base_dir = Path.home() / ".android-jdk"
+                if jdk_base_dir.exists():
+                    for d in jdk_base_dir.iterdir():
+                        if d.is_dir() and ((d / "bin" / "java.exe").exists() or (d / "bin" / "java").exists()):
+                            env["JAVA_HOME"] = str(d)
+                            break
+            if "ANDROID_HOME" not in env:
+                sdk_dir = Path.home() / ".android-sdk"
+                if sdk_dir.exists():
+                    env["ANDROID_HOME"] = str(sdk_dir)
+
+            self._preload_gradle_distribution(bundle_dir, env)
+
+            self.logger.info(f"Running Gradle {build_task}...")
+            self.logger.info(f"Target architectures: {', '.join(abi_filters)}")
+            result = subprocess.run(
+                [str(gradle_path), "--console", "plain", build_task],
+                cwd=str(bundle_dir),
+                capture_output=True,
+                text=True,
+                env=env,
             )
-            return result
 
-        # 使用 jarsigner 签名
-        keystore_password = os.environ.get("ANDROID_KEYSTORE_PASSWORD", "")
-        key_alias = os.environ.get("ANDROID_KEY_ALIAS", "release-key")
+            if result.stdout:
+                for line in result.stdout.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if "Chaquopy: Installing for" in line:
+                        self.logger.info(f"")
+                        self.logger.info(f"Installing packages for {line.split('Installing for')[-1].strip()}:")
+                    elif line.startswith("Successfully installed "):
+                        packages = line[len("Successfully installed "):].strip()
+                        for pkg in packages.split():
+                            self.logger.info(f"  {pkg}")
+                    elif line.startswith("Downloading "):
+                        self.logger.info(f"  {line}")
+                    elif any(keyword in line for keyword in ["BUILD", "FAILED", "SUCCESS", "actionable"]):
+                        self.logger.info(f"  {line}")
 
-        apk_path = result.output_path
-        signed_apk = apk_path.with_name(apk_path.stem + "-signed.apk")
+            if result.returncode != 0:
+                if result.stderr:
+                    self.logger.error(result.stderr)
+                raise BuildError(
+                    f"Gradle build failed",
+                    "Check the Gradle output for details"
+                )
 
-        cmd = [
-            "jarsigner",
-            "-verbose",
-            "-sigalg", "SHA256withRSA",
-            "-digestalg", "SHA-256",
-            "-keystore", keystore_path,
-            "-storepass", keystore_password,
-            "-signedjar", str(signed_apk),
-            str(apk_path),
-            key_alias,
-        ]
+            # 复制 APK 到 dist/
+            dist_dir = self.ensure_dist_dir(project_dir)
+            apk_pattern = "*debug*.apk" if build_type == "debug" else "*release*.apk"
+            apk_files = list((bundle_dir / "app" / "build" / "outputs" / "apk").rglob(apk_pattern))
 
-        sign_result = subprocess.run(cmd, capture_output=True, text=True)
-        if sign_result.returncode != 0:
-            self.logger.error(f"Signing failed: {sign_result.stderr}")
-            return BuildResult(success=False, error_message=f"Signing failed: {sign_result.stderr}")
+            if not apk_files:
+                raise BuildError("APK not found after build")
 
-        # 替换为签名后的 APK
-        shutil.move(str(signed_apk), str(apk_path))
-        self.logger.success(f"Signed APK: {apk_path}")
+            apk_path = apk_files[0]
+            arch_suffix = "_".join(a.replace("-", "_") for a in abi_filters)
+            dest_apk = dist_dir / f"{app_name}-{version}-android-{arch_suffix}.apk"
+            shutil.copy2(apk_path, dest_apk)
 
-        return BuildResult(success=True, output_path=apk_path)
+            self.logger.success(f"APK: {dest_apk}")
+
+            # 签名（可选）
+            keystore_path = os.environ.get("ANDROID_KEYSTORE_PATH")
+            if not keystore_path:
+                self.logger.warning(
+                    "ANDROID_KEYSTORE_PATH not set, APK is unsigned. "
+                    "Set environment variable for signed release builds."
+                )
+                return BuildResult(success=True, output_path=dest_apk)
+
+            # 使用 jarsigner 签名
+            keystore_password = os.environ.get("ANDROID_KEYSTORE_PASSWORD", "")
+            key_alias = os.environ.get("ANDROID_KEY_ALIAS", "release-key")
+
+            signed_apk = dest_apk.with_name(dest_apk.stem + "-signed.apk")
+
+            cmd = [
+                "jarsigner",
+                "-verbose",
+                "-sigalg", "SHA256withRSA",
+                "-digestalg", "SHA-256",
+                "-keystore", keystore_path,
+                "-storepass", keystore_password,
+                "-signedjar", str(signed_apk),
+                str(dest_apk),
+                key_alias,
+            ]
+
+            sign_result = subprocess.run(cmd, capture_output=True, text=True)
+            if sign_result.returncode != 0:
+                self.logger.error(f"Signing failed: {sign_result.stderr}")
+                return BuildResult(success=False, error_message=f"Signing failed: {sign_result.stderr}")
+
+            # 替换为签名后的 APK
+            shutil.move(str(signed_apk), str(dest_apk))
+            self.logger.success(f"Signed APK: {dest_apk}")
+
+            return BuildResult(success=True, output_path=dest_apk)
+
+        except (BuildError, PyAppEnvironmentError) as e:
+            self.logger.error(str(e))
+            return BuildResult(success=False, error_message=str(e))
+        except Exception as e:
+            self.logger.error(f"Package failed: {e}", exc_info=True)
+            return BuildResult(success=False, error_message=str(e))
 
     def _render_template(self, jinja_env, template_name, output_path, variables):
         """渲染 Jinja2 模板"""
