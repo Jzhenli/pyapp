@@ -27,9 +27,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Read Python version
+        id: pyver
+        shell: bash
+        run: |
+          PY_VER=$(grep 'python_version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$PY_VER" >> $GITHUB_OUTPUT
+
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ steps.pyver.outputs.version }}
 
       - name: Install pyapp
         run: pip install "pyapp-cli[compile] @ git+https://github.com/Jzhenli/pyapp.git"

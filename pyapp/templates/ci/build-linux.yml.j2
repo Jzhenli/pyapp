@@ -33,6 +33,7 @@ jobs:
       app_name: ${{ steps.vars.outputs.app_name }}
       version: ${{ steps.vars.outputs.version }}
       enable_nuitka: ${{ steps.vars.outputs.enable_nuitka }}
+      python_version: ${{ steps.vars.outputs.python_version }}
       build_matrix: ${{ steps.matrix.outputs.build_matrix }}
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +51,7 @@ jobs:
 
           app_name = config['project']['name']
           default_ver = config['project']['version']
+          python_version = config['tool']['pyapp']['python_version']
 
           # Resolve version: tag > pyproject.toml default
           ref = os.environ.get('GITHUB_REF', '')
@@ -65,6 +67,7 @@ jobs:
           print(f'app_name={app_name}')
           print(f'version={version}')
           print(f'enable_nuitka={enable_nuitka}')
+          print(f'python_version={python_version}')
           EOF
 
       - name: Generate matrix
@@ -114,17 +117,24 @@ jobs:
           githubToken: ${{ github.token }}
           install: |
             apt-get update -qq
-            apt-get install -y -qq python3 python3-pip build-essential libffi-dev libssl-dev \
+            # Add bookworm repos for newer Python versions
+            echo "deb http://deb.debian.org/debian bookworm main" >> /etc/apt/sources.list
+            apt-get update -qq
+            PY_VER=${{ needs.config.outputs.python_version }}
+            apt-get install -y -qq python${PY_VER} python${PY_VER}-pip python${PY_VER}-venv build-essential libffi-dev libssl-dev \
               libbz2-dev libreadline-dev libsqlite3-dev zlib1g-dev \
               wget git file ca-certificates tar gzip gcc g++ make patchelf
+            # Create symlinks so python3/pip3 point to the target version
+            ln -sf /usr/bin/python${PY_VER} /usr/bin/python3
+            ln -sf /usr/bin/pip${PY_VER} /usr/bin/pip3
           run: |
             # Use piwheels for armv7 pre-compiled wheels
             if [ "${{ matrix.arch }}" = "armv7l" ]; then
               export PIP_EXTRA_INDEX_URL="https://www.piwheels.org/simple"
             fi
 
-            pip3 install --upgrade pip
-            pip3 install "pyapp-cli[compile] @ git+https://github.com/Jzhenli/pyapp.git"
+            python3 -m pip install --upgrade pip
+            python3 -m pip install "pyapp-cli[compile] @ git+https://github.com/Jzhenli/pyapp.git"
             pyapp build linux --arch ${{ matrix.arch }}
 
             if [ "${{ needs.config.outputs.enable_nuitka }}" = "true" ]; then

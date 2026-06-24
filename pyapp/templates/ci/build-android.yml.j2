@@ -34,6 +34,7 @@ jobs:
       app_module: ${{ steps.vars.outputs.app_module }}
       version: ${{ steps.vars.outputs.version }}
       enable_nuitka: ${{ steps.vars.outputs.enable_nuitka }}
+      python_version: ${{ steps.vars.outputs.python_version }}
       compile_matrix: ${{ steps.matrix.outputs.compile_matrix }}
       build_matrix: ${{ steps.matrix.outputs.build_matrix }}
     steps:
@@ -53,6 +54,7 @@ jobs:
           app_name = config['project']['name']
           app_module = config['tool']['pyapp']['app_module']
           default_ver = config['project']['version']
+          python_version = config['tool']['pyapp']['python_version']
 
           # Resolve version: tag > pyproject.toml default
           ref = os.environ.get('GITHUB_REF', '')
@@ -69,6 +71,7 @@ jobs:
           print(f'app_module={app_module}')
           print(f'version={version}')
           print(f'enable_nuitka={enable_nuitka}')
+          print(f'python_version={python_version}')
           EOF
 
       - name: Generate matrix
@@ -136,7 +139,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: ${{ needs.config.outputs.python_version }}
 
       - name: Install pyapp
         run: pip install "pyapp-cli[compile] @ git+https://github.com/Jzhenli/pyapp.git"
