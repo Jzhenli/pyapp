@@ -474,13 +474,10 @@ def _generate_ci_workflows(project_dir: Path, name: str, module_name: str):
 
     jinja_env = Environment(loader=FileSystemLoader(str(ci_template_dir)))
 
-    # 渲染上下文：app_module 对应模板中的 {{ app_module }}
+    # CI 模板使用 {% raw %} 包裹，无需渲染变量
     render_ctx = {
         "name": name,
         "module_name": module_name,
-        "app_module": module_name,  # 模板中使用 {{ app_module }}
-        "python_version": "3.11",   # Termux Python 版本
-        "nuitka_version": "2.7.12", # 已验证的 Nuitka 版本
     }
 
     # 1. 生成 CI workflow 脚本
@@ -492,11 +489,3 @@ def _generate_ci_workflows(project_dir: Path, name: str, module_name: str):
         output_name = template_name.replace(".j2", "")
         (workflows_dir / output_name).write_text(content, encoding="utf-8")
     logger.info("Generated CI workflows: .github/workflows/")
-
-    # 2. 生成 Termux 编译脚本（使用 Unix 行符，确保 Linux/Termux 兼容）
-    scripts_dir = project_dir / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    termux_template = jinja_env.get_template("termux_compile.sh.j2")
-    termux_content = termux_template.render(**render_ctx)
-    (scripts_dir / "termux_compile.sh").write_text(termux_content, encoding="utf-8", newline="\n")
-    logger.info("Generated Termux compile script: scripts/termux_compile.sh")

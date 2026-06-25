@@ -26,42 +26,30 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-
       - name: Read project config
         id: vars
         shell: bash
         run: |
-          APP_NAME=$(grep '^name = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          PYTHON_VERSION=$(grep 'python_version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-
-          echo "app_name=$APP_NAME" >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "python_version=$PYTHON_VERSION" >> $GITHUB_OUTPUT
-
+          echo "app_name=$(grep '^name = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
+          echo "version=$(grep '^version = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
+          echo "python_version=$(grep 'python_version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ steps.vars.outputs.python_version }}
-
       - name: Install pyapp
         run: pip install "pyapp-cli[compile] @ git+https://github.com/Jzhenli/pyapp.git"
-
       - name: Build
         run: pyapp build windows
-
       - name: Compile with Nuitka
         if: inputs.enable_nuitka != false
         run: pyapp compile windows
-
       - name: Package
         run: pyapp package windows
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ${{ steps.vars.outputs.app_name }}-${{ steps.vars.outputs.version }}-windows
           path: dist/*.zip
-
       - name: Summary
         if: always()
         shell: bash
@@ -70,3 +58,4 @@ jobs:
           echo "- **App**: ${{ steps.vars.outputs.app_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: ${{ steps.vars.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Nuitka**: ${{ inputs.enable_nuitka != false }}" >> $GITHUB_STEP_SUMMARY{% endraw %}
+

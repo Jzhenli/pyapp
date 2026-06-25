@@ -170,7 +170,7 @@ def compile_platform(platform: str, project_dir: Path = None, precompiled: Path 
             raise click.ClickException(
                 "Android compile requires --precompiled option.\n"
                 "Run Termux Docker first to generate .so file.\n"
-                "See: scripts/termux_compile.sh"
+                "See: .github/workflows/build-android.yml"
             )
         if not precompiled.exists():
             raise click.ClickException(f"Precompiled .so not found: {precompiled}")
