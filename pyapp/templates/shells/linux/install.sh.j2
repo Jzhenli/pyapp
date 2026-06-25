@@ -1,0 +1,26 @@
+#!/bin/bash
+set -e
+
+APP_NAME="{{ app_name }}"
+SERVICE_NAME="{{ service_name }}"
+INSTALL_DIR="{{ install_dir }}"
+
+echo "Installing $APP_NAME..."
+
+# Create install directory
+sudo mkdir -p "$INSTALL_DIR"
+
+# Copy files
+sudo cp -r "$(dirname "$0")/runtime" "$INSTALL_DIR/"
+sudo cp -r "$(dirname "$0")/$APP_NAME-{{ version }}" "$INSTALL_DIR/"
+sudo cp "$(dirname "$0")/run.sh" "$INSTALL_DIR/"
+sudo chmod +x "$INSTALL_DIR/run.sh"
+
+# Install systemd service
+sudo cp "$(dirname "$0")/$SERVICE_NAME.service" /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl start "$SERVICE_NAME"
+
+echo "Installation complete. Service started."
+echo "Check status: sudo systemctl status $SERVICE_NAME"
