@@ -80,12 +80,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Compile in Termux Docker
+        env:
+          PYTHON_VERSION: ${{ needs.config.outputs.python_version }}
         run: |
           IMAGE="termux/termux-docker:${{ matrix.termux_arch }}"
 
           mkdir -p dist && chmod -R 777 dist src/
 
-          docker run --rm -v $PWD:/src -e PYTHON_VERSION="${{ needs.config.outputs.python_version }}" "$IMAGE" bash /src/scripts/termux_compile.sh
+          docker run --rm -v $PWD:/src "$IMAGE" bash /src/scripts/termux_compile.sh "$PYTHON_VERSION"
 
       - uses: actions/upload-artifact@v4
         with:
