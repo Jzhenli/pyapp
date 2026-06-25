@@ -81,9 +81,10 @@ jobs:
           PY_MINOR=$(echo "$PY_VER" | cut -d. -f1,2)
 
           case "$PY_MINOR" in
-            3.10) FULL_PY_VER="3.10.14" ;;
+            3.10) FULL_PY_VER="3.10.20" ;;
             3.11) FULL_PY_VER="3.11.15" ;;
-            3.12) FULL_PY_VER="3.12.7"  ;;
+            3.12) FULL_PY_VER="3.12.13" ;;
+            3.13) FULL_PY_VER="3.13.14" ;;
             *) echo "Unsupported Python version: $PY_VER" && exit 1 ;;
           esac
 
