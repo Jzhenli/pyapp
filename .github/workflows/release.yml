@@ -13,6 +13,8 @@ jobs:
       contents: write  # 添加这一行，赋予创建 Release 的权限
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # setuptools-scm 需要完整 git 历史推导版本
 
       - name: Setup Python
         uses: actions/setup-python@v5

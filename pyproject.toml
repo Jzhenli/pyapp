@@ -1,6 +1,6 @@
 [project]
 name = "pyapp-cli"
-version = "0.1.0"
+dynamic = ["version"]
 description = "跨平台打包工具 - 一份 Python 代码，一行命令，三平台安装包"
 authors = [{name = "Developer", email = "dev@example.com"}]
 requires-python = ">=3.10"
@@ -23,8 +23,11 @@ compile = [
 pyapp = "pyapp.cli:main"
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+write_to = "pyapp/_version.py"
 
 [tool.setuptools.packages.find]
 where = ["."]
