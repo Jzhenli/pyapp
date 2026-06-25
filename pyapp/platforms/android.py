@@ -1191,8 +1191,11 @@ def get_status() -> dict:
         dst_gradlew = bundle_dir / "gradlew"
         if src_gradlew.exists():
             shutil.copy2(src_gradlew, dst_gradlew)
-            # 设置可执行权限
+            # 设置可执行权限并确保 LF 行尾符（Unix shell 脚本需要）
             if os.name != "nt":
+                # 转换 CRLF 为 LF
+                content = dst_gradlew.read_text(encoding="utf-8")
+                dst_gradlew.write_text(content.replace("\r\n", "\n"), encoding="utf-8")
                 os.chmod(dst_gradlew, 0o755)
         else:
             self.logger.warning("gradlew template not found, creating stub...")
