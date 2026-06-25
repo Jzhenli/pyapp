@@ -5,22 +5,33 @@ APP_NAME="{{ app_name }}"
 SERVICE_NAME="{{ service_name }}"
 INSTALL_DIR="{{ install_dir }}"
 
+# Check if we need sudo
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=""
+else
+  SUDO="sudo"
+fi
+
 echo "Installing $APP_NAME..."
 
 # Create install directory
-sudo mkdir -p "$INSTALL_DIR"
+$SUDO mkdir -p "$INSTALL_DIR"
 
 # Copy files
-sudo cp -r "$(dirname "$0")/runtime" "$INSTALL_DIR/"
-sudo cp -r "$(dirname "$0")/$APP_NAME-{{ version }}" "$INSTALL_DIR/"
-sudo cp "$(dirname "$0")/run.sh" "$INSTALL_DIR/"
-sudo chmod +x "$INSTALL_DIR/run.sh"
+$SUDO cp -r "$(dirname "$0")/runtime" "$INSTALL_DIR/"
+$SUDO cp -r "$(dirname "$0")/$APP_NAME-{{ version }}" "$INSTALL_DIR/"
+$SUDO cp "$(dirname "$0")/run.sh" "$INSTALL_DIR/"
+$SUDO chmod +x "$INSTALL_DIR/run.sh"
 
-# Install systemd service
-sudo cp "$(dirname "$0")/$SERVICE_NAME.service" /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable "$SERVICE_NAME"
-sudo systemctl start "$SERVICE_NAME"
-
-echo "Installation complete. Service started."
-echo "Check status: sudo systemctl status $SERVICE_NAME"
+# Install systemd service if available
+if command -v systemctl >/dev/null 2>&1; then
+  $SUDO cp "$(dirname "$0")/$SERVICE_NAME.service" /etc/systemd/system/
+  $SUDO systemctl daemon-reload
+  $SUDO systemctl enable "$SERVICE_NAME"
+  $SUDO systemctl start "$SERVICE_NAME"
+  echo "Installation complete. Service started."
+  echo "Check status: $SUDO systemctl status $SERVICE_NAME"
+else
+  echo "Installation complete (no systemd)."
+  echo "Run manually: $INSTALL_DIR/run.sh"
+fi

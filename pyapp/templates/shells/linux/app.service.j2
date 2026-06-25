@@ -5,13 +5,12 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory={{ install_dir }}/app
+WorkingDirectory={{ install_dir }}
 ExecStart={{ install_dir }}/run.sh
 Restart=on-failure
 RestartSec=5
 
 Environment=APP_MODE=production
-Environment=PYTHONPATH={{ install_dir }}/app:{{ install_dir }}/app_packages
 
 [Install]
 WantedBy=multi-user.target

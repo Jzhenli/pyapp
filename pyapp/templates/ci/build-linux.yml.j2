@@ -13,6 +13,12 @@ on:
         type: choice
         options: [armv7l, aarch64, 'armv7l,aarch64']
         default: 'armv7l'
+      distro:
+        description: 'Debian distro (bullseye=GLIBC 2.31, bookworm=GLIBC 2.36)'
+        required: false
+        type: choice
+        options: [bullseye, bookworm]
+        default: 'bullseye'
       enable_nuitka:
         description: 'Enable Nuitka compilation'
         required: false
@@ -32,54 +38,27 @@ jobs:
     outputs:
       app_name: ${{ steps.vars.outputs.app_name }}
       version: ${{ steps.vars.outputs.version }}
-      enable_nuitka: ${{ steps.vars.outputs.enable_nuitka }}
       python_version: ${{ steps.vars.outputs.python_version }}
       build_matrix: ${{ steps.matrix.outputs.build_matrix }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Resolve variables
+      - name: Read project config
         id: vars
-        env:
-          ENABLE_NUITKA_INPUT: ${{ inputs.enable_nuitka }}
         run: |
-          python3 << 'EOF' >> $GITHUB_OUTPUT
-          import tomllib, os
-
-          with open('pyproject.toml', 'rb') as f:
-              config = tomllib.load(f)
-
-          app_name = config['project']['name']
-          default_ver = config['project']['version']
-          python_version = config['tool']['pyapp']['python_version']
-
-          # Resolve version: tag > pyproject.toml default
-          ref = os.environ.get('GITHUB_REF', '')
-          if ref.startswith('refs/tags/'):
-              version = ref.replace('refs/tags/', '').rsplit('/v', 1)[-1]
-          else:
-              version = default_ver
-
-          # Resolve enable_nuitka
-          event = os.environ.get('GITHUB_EVENT_NAME', '')
-          enable_nuitka = 'true' if event != 'workflow_dispatch' else os.environ.get('ENABLE_NUITKA_INPUT', 'true')
-
-          print(f'app_name={app_name}')
-          print(f'version={version}')
-          print(f'enable_nuitka={enable_nuitka}')
-          print(f'python_version={python_version}')
-          EOF
-
+          APP_NAME=$(grep '^name = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          PYTHON_VERSION=$(grep 'python_version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "app_name=$APP_NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "python_version=$PYTHON_VERSION" >> $GITHUB_OUTPUT
       - name: Generate matrix
         id: matrix
         run: |
           ARCHS="${{ inputs.archs || 'armv7l' }}"
           ARCHS=$(echo "$ARCHS" | tr -d ' ')
           MATRIX=""
-
-          [[ "$ARCHS" == *"armv7l"* ]]   && MATRIX+='{"arch":"armv7l","qemu_arch":"armv7"},'
+          [[ "$ARCHS" == *"armv7l"* ]] && MATRIX+='{"arch":"armv7l","qemu_arch":"armv7"},'
           [[ "$ARCHS" == *"aarch64"* ]] && MATRIX+='{"arch":"aarch64","qemu_arch":"aarch64"},'
-
           echo "build_matrix=[${MATRIX%,}]" >> $GITHUB_OUTPUT
 
   build:
@@ -94,53 +73,66 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Update version
-        env:
-          VERSION: ${{ needs.config.outputs.version }}
+      # 优化：在宿主机(x86)上解析URL并下载 PBS，避免 QEMU 网络瓶颈
+      - name: Download PBS on Host
         run: |
-          python3 -c "
-          import tomllib, os
-          with open('pyproject.toml', 'rb') as f:
-              default_ver = tomllib.load(f)['project']['version']
-          version = os.environ['VERSION']
-          if version != default_ver:
-              content = open('pyproject.toml').read()
-              content = content.replace(f'version = \"{default_ver}\"', f'version = \"{version}\"', 1)
-              open('pyproject.toml', 'w').write(content)
-          "
+          PBS_TAG="20260610"
+          PY_VER="${{ needs.config.outputs.python_version }}"
+          PY_MINOR=$(echo "$PY_VER" | cut -d. -f1,2)
+
+          case "$PY_MINOR" in
+            3.10) FULL_PY_VER="3.10.14" ;;
+            3.11) FULL_PY_VER="3.11.15" ;;
+            3.12) FULL_PY_VER="3.12.7"  ;;
+            *) echo "Unsupported Python version: $PY_VER" && exit 1 ;;
+          esac
+
+          case "${{ matrix.arch }}" in
+            armv7l) TRIPLE="armv7-unknown-linux-gnueabihf" ;;
+            aarch64) TRIPLE="aarch64-unknown-linux-gnu" ;;
+          esac
+
+          URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${FULL_PY_VER}+${PBS_TAG}-${TRIPLE}-install_only.tar.gz"
+          echo "Downloading PBS from $URL to pbs.tar.gz"
+          wget -q "$URL" -O pbs.tar.gz
+          ls -lh pbs.tar.gz
 
       - name: Build on ${{ matrix.arch }}
         uses: uraimo/run-on-arch-action@v3
         with:
           arch: ${{ matrix.qemu_arch }}
-          distro: bullseye
+          distro: ${{ inputs.distro || 'bullseye' }}
           githubToken: ${{ github.token }}
+
+          # 仅安装编译工具链，不再安装系统 python 和 lib*-dev
           install: |
             apt-get update -qq
-            # Add bookworm repos for newer Python versions
-            echo "deb http://deb.debian.org/debian bookworm main" >> /etc/apt/sources.list
-            apt-get update -qq
-            PY_VER=${{ needs.config.outputs.python_version }}
-            apt-get install -y -qq python${PY_VER} python${PY_VER}-pip python${PY_VER}-venv build-essential libffi-dev libssl-dev \
-              libbz2-dev libreadline-dev libsqlite3-dev zlib1g-dev \
-              wget git file ca-certificates tar gzip gcc g++ make patchelf
-            # Create symlinks so python3/pip3 point to the target version
-            ln -sf /usr/bin/python${PY_VER} /usr/bin/python3
-            ln -sf /usr/bin/pip${PY_VER} /usr/bin/pip3
+            apt-get install -y -qq build-essential gcc g++ make patchelf \
+              wget git file ca-certificates tar gzip
+
+          # 直接解压宿主机下载好的 pbs.tar.gz (位于挂载的 /github/workspace 目录)
           run: |
-            # Use piwheels for armv7 pre-compiled wheels
+            # 解压 PBS 到 /opt/python
+            mkdir -p /opt/python
+            tar -xzf pbs.tar.gz -C /opt/python --strip-components=1
+
+            # 配置环境变量
+            ln -sf /opt/python/bin/python3 /usr/bin/python3
+            export PATH="/opt/python/bin:$PATH"
+
+            # armv7l 使用 piwheels 获取预编译轮子
             if [ "${{ matrix.arch }}" = "armv7l" ]; then
               export PIP_EXTRA_INDEX_URL="https://www.piwheels.org/simple"
             fi
 
+            # 安装并执行编译 (PBS 是独立环境，不需要 --break-system-packages)
             python3 -m pip install --upgrade pip
             python3 -m pip install "pyapp-cli[compile] @ git+https://github.com/Jzhenli/pyapp.git"
-            pyapp build linux --arch ${{ matrix.arch }}
 
-            if [ "${{ needs.config.outputs.enable_nuitka }}" = "true" ]; then
+            pyapp build linux --arch ${{ matrix.arch }}
+            if [[ "${{ inputs.enable_nuitka }}" != "false" ]]; then
               pyapp compile linux
             fi
-
             pyapp package linux
 
       - uses: actions/upload-artifact@v4
@@ -155,5 +147,5 @@ jobs:
           echo "### Linux Build (${{ matrix.arch }})" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: ${{ needs.config.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Arch**: ${{ matrix.arch }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Nuitka**: ${{ needs.config.outputs.enable_nuitka }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Nuitka**: ${{ inputs.enable_nuitka != false }}" >> $GITHUB_STEP_SUMMARY
 {% endraw %}
