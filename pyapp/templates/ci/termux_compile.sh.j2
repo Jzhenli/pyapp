@@ -20,7 +20,11 @@ fi
 # 安装 Python 和编译工具
 apt update -yq && apt upgrade -yq
 apt install -yq tur-repo && apt update -yq
-apt install -yq python{{ python_version }}
+
+# 从环境变量获取 Python 版本，默认 3.11
+PY_VER="${PYTHON_VERSION:-3.11}"
+PY_VER=$(echo "$PY_VER" | cut -d. -f1,2)  # 取主版本号如 3.11
+apt install -yq python${PY_VER}
 
 PY_BIN=$(ls $PREFIX/bin/python3.* 2>/dev/null | grep -v config | head -1)
 [ -z "$PY_BIN" ] && { echo "error: python3 not found"; exit 1; }

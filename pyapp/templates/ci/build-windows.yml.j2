@@ -27,66 +27,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read Python version
-        id: pyver
+      - name: Read project config
+        id: vars
         shell: bash
         run: |
-          PY_VER=$(grep 'python_version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "version=$PY_VER" >> $GITHUB_OUTPUT
+          APP_NAME=$(grep '^name = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          PYTHON_VERSION=$(grep 'python_version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+
+          echo "app_name=$APP_NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "python_version=$PYTHON_VERSION" >> $GITHUB_OUTPUT
 
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ steps.pyver.outputs.version }}
+          python-version: ${{ steps.vars.outputs.python_version }}
 
       - name: Install pyapp
         run: pip install "pyapp-cli[compile] @ git+https://github.com/Jzhenli/pyapp.git"
 
-      - name: Resolve variables and update version
-        id: vars
-        shell: bash
-        env:
-          ENABLE_NUITKA_INPUT: ${{ inputs.enable_nuitka }}
-        run: |
-          python << 'EOF' >> $GITHUB_OUTPUT
-          import tomllib, os
-
-          with open('pyproject.toml', 'rb') as f:
-              config = tomllib.load(f)
-
-          app_name = config['project']['name']
-          default_ver = config['project']['version']
-
-          # Resolve version: tag > pyproject.toml default
-          ref = os.environ.get('GITHUB_REF', '')
-          if ref.startswith('refs/tags/'):
-              version = ref.replace('refs/tags/', '').rsplit('/v', 1)[-1]
-          else:
-              version = default_ver
-
-          # Update version in pyproject.toml
-          if version != default_ver:
-              content = open('pyproject.toml').read()
-              content = content.replace(f'version = "{default_ver}"', f'version = "{version}"', 1)
-              open('pyproject.toml', 'w').write(content)
-
-          # Resolve enable_nuitka: tag trigger always true, dispatch from input
-          event = os.environ.get('GITHUB_EVENT_NAME', '')
-          enable_nuitka = 'true' if event != 'workflow_dispatch' else os.environ.get('ENABLE_NUITKA_INPUT', 'true')
-
-          print(f'app_name={app_name}')
-          print(f'version={version}')
-          print(f'enable_nuitka={enable_nuitka}')
-          EOF
-
       - name: Build
         run: pyapp build windows
 
-      - name: Setup MSVC
-        if: steps.vars.outputs.enable_nuitka == 'true'
-        uses: ilammy/msvc-dev-cmd@v1
-
       - name: Compile with Nuitka
-        if: steps.vars.outputs.enable_nuitka == 'true'
+        if: inputs.enable_nuitka != false
         run: pyapp compile windows
 
       - name: Package
@@ -105,5 +69,4 @@ jobs:
           echo "### Windows Build" >> $GITHUB_STEP_SUMMARY
           echo "- **App**: ${{ steps.vars.outputs.app_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: ${{ steps.vars.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Nuitka**: ${{ steps.vars.outputs.enable_nuitka }}" >> $GITHUB_STEP_SUMMARY
-{% endraw %}
+          echo "- **Nuitka**: ${{ inputs.enable_nuitka != false }}" >> $GITHUB_STEP_SUMMARY{% endraw %}
