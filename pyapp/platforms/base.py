@@ -467,10 +467,12 @@ class BasePlatform(ABC):
         """
         src_dir = project_dir / "src"
 
-        # 获取版本号目录
+        # 获取版本号目录与主包名
+        version = app_module = None
         if config:
             app_name = self.get_app_name(config)
             version = self.get_app_version(config)
+            app_module = self.get_app_module(config)
             version_dir = f"{app_name}-{version}"
         else:
             version_dir = "app"
@@ -482,7 +484,41 @@ class BasePlatform(ABC):
 
         shutil.copytree(src_dir, target_dir)
         self.logger.info(f"Synced source code → {target_dir}")
+
+        # 将版本号注入到主包 __init__.py 的 __version__
+        if version:
+            self._inject_version(target_dir, version, app_module=app_module)
+
         return target_dir
+
+    def _inject_version(self, target_dir: Path, version: str, app_module: str = None) -> None:
+        """将版本号注入到 __init__.py 的 __version__ 变量，避免手动维护两处版本号
+
+        Args:
+            target_dir: 目标目录
+            version: 版本号
+            app_module: 主包名。提供时只注入 target_dir/app_module/__init__.py；
+                        为 None 时只注入 target_dir/__init__.py（不递归，避免误改第三方包）
+        """
+        pattern = re.compile(r'__version__\s*=\s*["\'][^"\']*["\']')
+        init_files = (
+            [target_dir / app_module / "__init__.py"]
+            if app_module
+            else [target_dir / "__init__.py"]
+        )
+        for init_file in init_files:
+            if not init_file.exists():
+                continue
+            try:
+                content = init_file.read_text(encoding="utf-8")
+                if pattern.search(content):
+                    init_file.write_text(
+                        pattern.sub(lambda m: f'__version__ = "{version}"', content),
+                        encoding="utf-8",
+                    )
+                    self.logger.info(f"Injected version {version} → {init_file.relative_to(target_dir)}")
+            except Exception as e:
+                self.logger.warning(f"Inject version failed for {init_file.relative_to(target_dir)}: {e}")
 
     def sync_frontend_dist(self, project_dir: Path, platform: str, config: Dict[str, Any] = None) -> Optional[Path]:
         """

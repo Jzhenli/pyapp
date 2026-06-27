@@ -541,11 +541,13 @@ class AndroidPlatform(BasePlatform):
         python_target.mkdir(parents=True, exist_ok=True)
         
         # 复制 src/ 下的所有 Python 包到 app/src/main/python/
+        version = self.get_app_version(config)
         for item in src_dir.iterdir():
             if item.is_dir():
                 # 复制 Python 包目录
                 target = python_target / item.name
                 shutil.copytree(item, target)
+                self._inject_version(target, version)
                 self.logger.info(f"Copied {item.name} → app/src/main/python/{item.name}")
             elif item.suffix == ".py":
                 # 复制单个 Python 文件

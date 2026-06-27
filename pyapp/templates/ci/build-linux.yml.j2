@@ -18,6 +18,10 @@ on:
         required: false
         type: boolean
         default: true
+      version:
+        description: 'Version override (leave empty to use pyproject.toml)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -39,9 +43,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Read project config
         id: vars
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
+          # 确定版本号：tag 触发从 tag 提取，手动触发用输入值，否则从 pyproject.toml 读取
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/*/v}"
+          elif [[ -n "$VERSION_INPUT" ]]; then
+            VERSION="$VERSION_INPUT"
+          else
+            VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          # 回写 pyproject.toml，确保 pyapp build 读到正确版本（无覆盖时为空操作）
+          [[ -n "$VERSION" ]] && sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
           echo "app_name=$(grep '^name = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
-          echo "version=$(grep '^version = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "python_version=$(grep 'python_version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
       - name: Generate matrix
         id: matrix
@@ -87,6 +103,16 @@ jobs:
           FILENAME="cpython-${FULL_PY_VER}+${PBS_TAG}-${TRIPLE}-install_only_stripped.tar.gz"
           echo "url=https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/${FILENAME}" >> $GITHUB_OUTPUT
           echo "filename=$FILENAME" >> $GITHUB_OUTPUT
+
+      # 前端是纯静态资源，在宿主机构建即可，run-on-arch 会把工作目录挂载进 QEMU 容器
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build frontend
+        run: |
+          cd frontend
+          [[ -f package-lock.json ]] && npm ci || npm install
+          npm run build
 
       - name: Build on ${{ matrix.arch }}
         uses: uraimo/run-on-arch-action@v3

@@ -12,6 +12,10 @@ on:
         required: false
         type: boolean
         default: true
+      version:
+        description: 'Version override (leave empty to use pyproject.toml)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -29,10 +33,31 @@ jobs:
       - name: Read project config
         id: vars
         shell: bash
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
+          # 确定版本号：tag 触发从 tag 提取，手动触发用输入值，否则从 pyproject.toml 读取
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/*/v}"
+          elif [[ -n "$VERSION_INPUT" ]]; then
+            VERSION="$VERSION_INPUT"
+          else
+            VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          # 回写 pyproject.toml，确保 pyapp build 读到正确版本（无覆盖时为空操作）
+          [[ -n "$VERSION" ]] && sed -i "s/^version = \".*\"/version = \"$VERSION\"/" pyproject.toml
           echo "app_name=$(grep '^name = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
-          echo "version=$(grep '^version = ' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "python_version=$(grep 'python_version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" >> $GITHUB_OUTPUT
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build frontend
+        shell: bash
+        run: |
+          cd frontend
+          [[ -f package-lock.json ]] && npm ci || npm install
+          npm run build
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ steps.vars.outputs.python_version }}
