@@ -173,12 +173,12 @@ class AndroidPlatform(BasePlatform):
         # MainActivity.kt
         main_activity = kotlin_package_dir / "MainActivity.kt"
         if not main_activity.exists():
-            main_activity.write_text(self._generate_main_activity(package_name, port))
-        
+            main_activity.write_text(self._generate_main_activity(package_name, port, app_name))
+
         # PythonService.kt
         python_service = kotlin_package_dir / "PythonService.kt"
         if not python_service.exists():
-            python_service.write_text(self._generate_python_service(package_name, port))
+            python_service.write_text(self._generate_python_service(package_name, port, app_name))
 
         # 创建 gradle wrapper
         gradle_dir = bundle_dir / "gradle" / "wrapper"
@@ -595,7 +595,7 @@ class AndroidPlatform(BasePlatform):
 
         self.logger.success(f"Synced frontend/dist/ → app/src/main/python/{app_module}/resources/static/")
 
-    def _generate_main_activity(self, package_name: str, port: int = 18080) -> str:
+    def _generate_main_activity(self, package_name: str, port: int = 18080, app_name: str = "Python") -> str:
         """生成 MainActivity Kotlin 代码"""
         return f'''package {package_name}
 
@@ -742,7 +742,7 @@ class MainActivity : AppCompatActivity() {{
     }}
 
     private fun startPythonService() {{
-        tvStatus.text = "正在启动 Python 服务..."
+        tvStatus.text = "正在启动 {app_name} 服务..."
         val intent = Intent(this, PythonService::class.java)
         startForegroundService(intent)
         Log.i(TAG, "PythonService started")
@@ -754,7 +754,7 @@ class MainActivity : AppCompatActivity() {{
 
             while (isActive && retryCount < MAX_RETRY_COUNT) {{
                 retryCount++
-                tvStatus.text = "等待 Python 服务就绪... ($retryCount/$MAX_RETRY_COUNT)"
+                tvStatus.text = "等待 {app_name} 服务就绪... ($retryCount/$MAX_RETRY_COUNT)"
 
                 try {{
                     if (checkPythonStatus()) {{
@@ -769,7 +769,7 @@ class MainActivity : AppCompatActivity() {{
                 delay(RETRY_INTERVAL_MS)
             }}
 
-            tvStatus.text = "Python 服务启动超时"
+            tvStatus.text = "{app_name} 服务启动超时"
         }}
     }}
 
@@ -828,7 +828,7 @@ class MainActivity : AppCompatActivity() {{
 }}
 '''
 
-    def _generate_python_service(self, package_name: str, port: int = 18080) -> str:
+    def _generate_python_service(self, package_name: str, port: int = 18080, app_name: str = "Python") -> str:
         """生成 PythonService Kotlin 代码"""
         return f'''package {package_name}
 
@@ -877,10 +877,10 @@ class PythonService : Service() {{
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {{
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Python 服务",
+                "{app_name} 服务",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {{
-                description = "Python 服务运行中"
+                description = "{app_name} 服务运行中"
             }}
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
@@ -895,7 +895,7 @@ class PythonService : Service() {{
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Python 服务")
+            .setContentTitle("{app_name} 服务")
             .setContentText("服务运行中 · 端口 $PYTHON_PORT")
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setContentIntent(pendingIntent)
@@ -934,7 +934,7 @@ class PythonService : Service() {{
                 Handler(Looper.getMainLooper()).post {{
                     Toast.makeText(
                         this@PythonService,
-                        "Python 服务启动失败: ${{e.message}}",
+                        "{app_name} 服务启动失败: ${{e.message}}",
                         Toast.LENGTH_LONG
                     ).show()
                 }}
