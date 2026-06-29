@@ -64,7 +64,7 @@ class AndroidPlatform(BasePlatform):
         app_name = self.get_app_name(config)
         app_module = self.get_app_module(config)
         package_name = config.get("tool", {}).get("pyapp", {}).get("android", {}).get(
-            "package_name", f"com.example.{app_module.replace('_', '')}"
+            "package_name", f"com.example.{app_module.replace('_', '').lower()}"
         )
         min_sdk = config.get("tool", {}).get("pyapp", {}).get("android", {}).get("min_sdk", 24)
         target_sdk = config.get("tool", {}).get("pyapp", {}).get("android", {}).get("target_sdk", 34)
@@ -267,7 +267,7 @@ class AndroidPlatform(BasePlatform):
         version = self.get_app_version(config)
         app_module = self.get_app_module(config)
         package_name = config.get("tool", {}).get("pyapp", {}).get("android", {}).get(
-            "package_name", f"com.example.{app_module.replace('_', '')}"
+            "package_name", f"com.example.{app_module.replace('_', '').lower()}"
         )
 
         # 查找 APK（按新命名格式查找，回退到旧格式）
