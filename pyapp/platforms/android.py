@@ -1007,39 +1007,28 @@ def start_server(port: int, app_dir: str, data_dir: str) -> str:
         if _server_thread and _server_thread.is_alive():
             return "Server already running"
 
+        _server = None
         _actual_port = port
 
     def run_server():
         global _server
         try:
-            import uvicorn
             import os
-            
+
             # Set environment variables
             os.environ["APP_DIR"] = app_dir
             os.environ["APP_DATA_DIR"] = data_dir
             os.environ["APP_PORT"] = str(port)
 
-            # Import app - support two methods
-            try:
-                # Method 1: Use create_app factory function
-                from {app_module} import create_app
-                app = create_app()
-            except ImportError:
-                # Method 2: Use global app instance
-                from {app_module}.app import app
-
-            config = uvicorn.Config(
-                app,
-                host="127.0.0.1",
-                port=port,
-                log_level="info",
-                access_log=False,
-            )
-            _server = uvicorn.Server(config)
+            # create_server() returns the uvicorn.Server handle without running.
+            # _server is published before run() so stop_server() can flip should_exit.
+            from {app_module}.main import create_server
+            server = create_server(host="127.0.0.1", port=port, access_log=False)
+            with _lock:
+                _server = server
 
             logger.info(f"Starting server on port {{port}}")
-            _server.run()
+            server.run()
 
         except Exception as e:
             logger.error(f"Server error: {{e}}")
@@ -1066,6 +1055,12 @@ def stop_server() -> str:
             _server.should_exit = True
             logger.info("Server stop requested")
             return "Server stopping"
+
+        # Thread is alive but create_server() hasn't returned the server handle yet.
+        # Treat as starting so the caller knows to retry rather than misreport
+        # "not running" right after start_server().
+        if _server_thread and _server_thread.is_alive():
+            return "Server still starting"
 
         return "Server not running"
 

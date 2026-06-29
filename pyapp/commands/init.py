@@ -166,17 +166,17 @@ def _generate_python_files(project_dir: Path, name: str, module_name: str, templ
 
     # __init__.py
     (src_dir / "__init__.py").write_text(
-        f'"""{name}"""\n__version__ = "0.1.0"\nfrom {module_name}.app import main\n',
+        f'"""{name}"""\n__version__ = "0.1.0"\nfrom {module_name}.main import main\n',
         encoding="utf-8"
     )
 
     # __main__.py
     (src_dir / "__main__.py").write_text(
-        f'"""应用入口"""\nfrom {module_name}.app import main\n\nif __name__ == "__main__":\n    main()\n',
+        f'"""应用入口"""\nfrom {module_name}.main import main\n\nif __name__ == "__main__":\n    main()\n',
         encoding="utf-8"
     )
 
-    # app.py
+    # main.py
     if template == "fastapi":
         app_content = f'''"""FastAPI Application"""
 
@@ -234,15 +234,24 @@ async def restart():
     return {{ "status": "restarting" }}
 
 
-def main():
+def create_server(host="0.0.0.0", port=None, access_log=True):
+    """创建服务器实例（不启动），供 bridge/测试/嵌入式使用"""
     import uvicorn
-    port = int(os.environ.get("APP_PORT", "18080"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    if port is None:
+        port = int(os.environ.get("APP_PORT", "18080"))
+    config = uvicorn.Config(app, host=host, port=port,
+                            access_log=access_log, log_level="info")
+    return uvicorn.Server(config)
+
+
+def main(host="0.0.0.0", port=None, access_log=True):
+    """应用入口（阻塞运行）"""
+    create_server(host, port, access_log).run()
 '''
     else:
         app_content = f'''"""应用入口"""
 
-def main():
+def main(**kwargs):
     """启动应用"""
     print("Hello from {name}!")
 
@@ -251,7 +260,7 @@ if __name__ == "__main__":
     main()
 '''
 
-    (src_dir / "app.py").write_text(app_content, encoding="utf-8")
+    (src_dir / "main.py").write_text(app_content, encoding="utf-8")
 
 
 def _generate_gitignore(project_dir: Path):
@@ -329,7 +338,7 @@ pyapp build android --arch arm64-v8a
 ├── src/{module_name}/      # Python source code
 │   ├── __init__.py
 │   ├── __main__.py         # Entry point
-│   ├── app.py              # FastAPI application
+│   ├── main.py             # FastAPI application
 │   └── resources/          # Static resources
 ├── frontend/               # Frontend project (optional)
 ├── .github/workflows/      # CI scripts (auto-generated)

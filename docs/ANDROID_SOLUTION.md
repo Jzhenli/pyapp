@@ -74,7 +74,7 @@ android-demo/
         │   ├── bridge.py            # Python 桥接模块
         │   └── data_collector/
         │       ├── __init__.py
-        │       └── app.py           # FastAPI 应用
+        │       └── main.py          # FastAPI 应用
         │
         └── res/                     # Android 资源
             ├── layout/
@@ -237,19 +237,30 @@ class PythonService : Service() {
 
 ```python
 # bridge.py
-import data_collector.app as app_module
+import threading
 
 _server = None
+_server_thread = None
+_lock = threading.Lock()
 
-def start_server(port: int = 18080) -> bool:
-    """启动 FastAPI 服务器"""
-    global _server
-    try:
-        _server = app_module.run_server(port)
-        return True
-    except Exception as e:
-        print(f"Failed to start server: {e}")
-        return False
+def start_server(port: int = 18080, app_dir: str = "", data_dir: str = "") -> bool:
+    """启动 FastAPI 服务器（后台线程）"""
+    global _server, _server_thread
+    with _lock:
+        if _server_thread and _server_thread.is_alive():
+            return False
+
+    def run_server():
+        global _server
+        from data_collector.main import create_server
+        # create_server() 返回 server 句柄但不运行，由本线程持有 .run()，
+        # stop_server() 通过 should_exit 优雅停止
+        _server = create_server(host="127.0.0.1", port=port, access_log=False)
+        _server.run()
+
+    _server_thread = threading.Thread(target=run_server, daemon=True)
+    _server_thread.start()
+    return True
 
 def stop_server() -> bool:
     """停止服务器"""
@@ -263,7 +274,7 @@ def stop_server() -> bool:
 ### 4. FastAPI 应用
 
 ```python
-# data_collector/app.py
+# data_collector/main.py
 from fastapi import FastAPI
 import uvicorn
 
@@ -283,11 +294,19 @@ async def get_data():
         "memory": round(random.uniform(30, 80), 1),
     }
 
-def run_server(port: int = 18080):
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info")
-    server = uvicorn.Server(config)
-    server.run()
-    return server
+def create_server(host="0.0.0.0", port=None, access_log=True):
+    """创建服务器实例（不启动），供 bridge/测试/嵌入式使用"""
+    if port is None:
+        import os
+        port = int(os.environ.get("APP_PORT", "18080"))
+    config = uvicorn.Config(app, host=host, port=port,
+                            access_log=access_log, log_level="info")
+    return uvicorn.Server(config)
+
+
+def main(host="0.0.0.0", port=None, access_log=True):
+    """应用入口（阻塞运行）"""
+    create_server(host, port, access_log).run()
 ```
 
 ---
