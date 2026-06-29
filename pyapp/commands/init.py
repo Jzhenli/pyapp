@@ -137,7 +137,7 @@ app_module = "{module_name}"
 port = 18080
 
 [tool.pyapp.android]
-package_name = "com.example.{module_name.replace('_', '')}"
+package_name = "com.example.{module_name.replace('_', '').lower()}"
 min_sdk = 24
 target_sdk = 34
 permissions = [
