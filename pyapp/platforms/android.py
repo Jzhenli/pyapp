@@ -1020,10 +1020,19 @@ def start_server(port: int, app_dir: str, data_dir: str) -> str:
             os.environ["APP_DATA_DIR"] = data_dir
             os.environ["APP_PORT"] = str(port)
 
-            # create_server() returns the uvicorn.Server handle without running.
+            # create_server(app, ...) returns the uvicorn.Server handle without running.
             # _server is published before run() so stop_server() can flip should_exit.
-            from {app_module}.main import create_server
-            server = create_server(host="127.0.0.1", port=port, access_log=False)
+            # 兼容性：用户 main.py 可能有本地 create_server(host, port, access_log) 包装器
+            # （旧模板），也可能没有（新模板，依赖 pyapp_runtime.create_server(app, ...)）。
+            # 优先用 pyapp_runtime 的统一 API，回退到用户自定义的 create_server。
+            try:
+                from pyapp_runtime import create_server as _create_server
+                from {app_module}.main import app as _app
+                server = _create_server(_app, host="127.0.0.1", port=port, access_log=False)
+            except ImportError:
+                # 旧项目（未安装 pyapp-runtime）：回退到用户 main.py 中的 create_server
+                from {app_module}.main import create_server
+                server = create_server(host="127.0.0.1", port=port, access_log=False)
             with _lock:
                 _server = server
 

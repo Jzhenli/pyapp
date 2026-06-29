@@ -186,8 +186,12 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from pyapp_runtime import attach, create_server
 
 app = FastAPI(title="{name}")
+# 注册生命周期端点（/api/health、/api/shutdown、/api/restart）。
+# 幂等：create_server() 内部会再次调用 attach()，不会重复注册。
+attach(app)
 
 
 def get_resource_dir() -> Path:
@@ -219,34 +223,9 @@ async def index():
     }})
 
 
-@app.get("/api/health")
-async def health():
-    return {{ "status": "ok", "frontend": "available" if FRONTEND_AVAILABLE else "not_built" }}
-
-
-@app.post("/api/restart")
-async def restart():
-    import signal, threading
-    def _restart():
-        sig = signal.SIGINT if sys.platform == "win32" else signal.SIGTERM
-        os.kill(os.getpid(), sig)
-    threading.Timer(0.5, _restart).start()
-    return {{ "status": "restarting" }}
-
-
-def create_server(host="0.0.0.0", port=None, access_log=True):
-    """创建服务器实例（不启动），供 bridge/测试/嵌入式使用"""
-    import uvicorn
-    if port is None:
-        port = int(os.environ.get("APP_PORT", "18080"))
-    config = uvicorn.Config(app, host=host, port=port,
-                            access_log=access_log, log_level="info")
-    return uvicorn.Server(config)
-
-
 def main(host="0.0.0.0", port=None, access_log=True):
     """应用入口（阻塞运行）"""
-    create_server(host, port, access_log).run()
+    create_server(app, host=host, port=port, access_log=access_log).run()
 '''
     else:
         app_content = f'''"""应用入口"""

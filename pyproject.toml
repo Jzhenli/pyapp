@@ -31,7 +31,7 @@ write_to = "pyapp/_version.py"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["pyapp*"]
+include = ["pyapp", "pyapp.*"]
 
 [tool.setuptools.package-data]
 pyapp = [
