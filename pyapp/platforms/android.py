@@ -470,14 +470,12 @@ class AndroidPlatform(BasePlatform):
 
         self.logger.info(f"Dependencies: {', '.join(all_dependencies)}")
 
-        # 获取 pip 配置
-        pip_index_url = android_config.get("pip_index_url", "")
-        pip_extra_index_urls = android_config.get("pip_extra_index_urls", [
-            "https://chaquo.com/pypi-13.1",
-            "https://pypi.org/simple",
-        ])
-        pip_timeout = android_config.get("pip_timeout", 120)
-        pip_proxy = android_config.get("pip_proxy", "")
+        # 获取 pip 配置（支持公共 [tool.pyapp] 配置回退）
+        pip_config = self._get_pip_config(config, "android")
+        pip_index_url = pip_config["pip_index_url"]
+        pip_extra_index_urls = pip_config["pip_extra_index_urls"]
+        pip_timeout = pip_config["pip_timeout"]
+        pip_proxy = pip_config["pip_proxy"]
 
         # 读取并更新 build.gradle.kts
         build_gradle_path = bundle_dir / "app" / "build.gradle.kts"

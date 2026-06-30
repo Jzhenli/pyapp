@@ -153,7 +153,7 @@ class BasePlatform(ABC):
 
         # 根据平台选择不同的安装策略
         if platform == "android":
-            self._install_android_dependencies(all_dependencies, target, platform_config)
+            self._install_android_dependencies(all_dependencies, target, config, platform)
         else:
             self._install_native_dependencies(all_dependencies, target, platform, arch, config)
 
@@ -179,17 +179,59 @@ class BasePlatform(ABC):
 
         return list(merged.values())
 
-    def _install_android_dependencies(self, dependencies: list, target: Path, platform_config: dict) -> None:
+    def _get_pip_config(self, config: Dict[str, Any], platform: str) -> Dict[str, Any]:
+        """
+        解析 pip 配置：平台特定配置优先于公共 [tool.pyapp] 配置。
+
+        公共配置写在 [tool.pyapp] 中，三个平台共用；
+        平台特定配置（[tool.pyapp.android/windows/linux]）可覆盖公共配置。
+
+        Android 平台默认附带 Chaquopy 源以保证二进制兼容性。
+        """
+        pyapp_config = config.get("tool", {}).get("pyapp", {})
+        platform_config = pyapp_config.get(platform, {})
+
+        # pip_index_url: 平台配置 → 公共配置 → 空字符串
+        pip_index_url = platform_config.get("pip_index_url") or pyapp_config.get("pip_index_url", "")
+
+        # pip_extra_index_urls: 平台配置完全覆盖；否则公共配置 + Android 默认源
+        common_extra = pyapp_config.get("pip_extra_index_urls", [])
+        platform_extra = platform_config.get("pip_extra_index_urls")
+        if platform_extra is not None:
+            pip_extra_index_urls = list(platform_extra)
+        elif common_extra:
+            pip_extra_index_urls = list(common_extra)
+            if platform == "android":
+                chaquo = "https://chaquo.com/pypi-13.1"
+                if chaquo not in pip_extra_index_urls:
+                    pip_extra_index_urls.append(chaquo)
+        else:
+            if platform == "android":
+                pip_extra_index_urls = [
+                    "https://chaquo.com/pypi-13.1",
+                    "https://pypi.org/simple",
+                ]
+            else:
+                pip_extra_index_urls = []
+
+        pip_timeout = platform_config.get("pip_timeout") or pyapp_config.get("pip_timeout", 120)
+        pip_proxy = platform_config.get("pip_proxy") or pyapp_config.get("pip_proxy", "")
+
+        return {
+            "pip_index_url": pip_index_url,
+            "pip_extra_index_urls": pip_extra_index_urls,
+            "pip_timeout": pip_timeout,
+            "pip_proxy": pip_proxy,
+        }
+
+    def _install_android_dependencies(self, dependencies: list, target: Path, config: Dict[str, Any], platform: str = "android") -> None:
         """安装 Android 平台依赖（考虑 Chaquopy 兼容性）"""
-        # 从配置获取 pip 索引设置
-        pip_index_url = platform_config.get("pip_index_url", "")
-        # 默认使用 Chaquopy 官方仓库和 PyPI 作为额外索引
-        pip_extra_index_urls = platform_config.get("pip_extra_index_urls", [
-            "https://chaquo.com/pypi-13.1",
-            "https://pypi.org/simple",
-        ])
-        pip_timeout = platform_config.get("pip_timeout", 120)
-        pip_proxy = platform_config.get("pip_proxy", "")
+        # 从配置获取 pip 索引设置（支持公共 [tool.pyapp] 配置回退）
+        pip_config = self._get_pip_config(config, platform)
+        pip_index_url = pip_config["pip_index_url"]
+        pip_extra_index_urls = pip_config["pip_extra_index_urls"]
+        pip_timeout = pip_config["pip_timeout"]
+        pip_proxy = pip_config["pip_proxy"]
 
         self.logger.info(f"Installing {len(dependencies)} dependencies for Android...")
         self.logger.info(f"Dependencies: {dependencies}")
@@ -317,12 +359,32 @@ class BasePlatform(ABC):
         cache_manager = CacheManager()
         pip_cache_dir = cache_manager.packages_dir
 
+        # 解析 pip 配置（支持公共 [tool.pyapp] 配置回退）
+        pip_config = self._get_pip_config(config, platform)
+        user_index_url = pip_config["pip_index_url"]
+        user_extra_index_urls = pip_config["pip_extra_index_urls"]
+        pip_timeout = pip_config["pip_timeout"]
+        pip_proxy = pip_config["pip_proxy"]
+
         cmd = [
             sys.executable, "-m", "pip", "install"
         ] + dependencies + [
             "--target", str(target),
             "--cache-dir", str(pip_cache_dir),
         ]
+
+        # 添加用户配置的索引源
+        if user_index_url:
+            cmd.extend(["--index-url", user_index_url])
+            self.logger.info(f"Index URL: {user_index_url}")
+        for extra_url in user_extra_index_urls:
+            cmd.extend(["--extra-index-url", extra_url])
+            self.logger.info(f"Extra index URL: {extra_url}")
+        if pip_timeout:
+            cmd.extend(["--timeout", str(pip_timeout)])
+        if pip_proxy:
+            cmd.extend(["--proxy", pip_proxy])
+            self.logger.info(f"Using proxy: {pip_proxy}")
 
         if is_cross_compile or is_cross_arch:
             self.logger.warning(
@@ -396,9 +458,29 @@ class BasePlatform(ABC):
                         "--cache-dir", str(pip_cache_dir),
                     ]
 
-                    # 根据配置选择源
-                    if index_url:
+                    # 索引源优先级：用户配置的 pip_index_url 作为主源，
+                    # 架构特定源（如 piwheels）和用户额外源作为 extra-index-url；
+                    # 若用户未配置，则保持原逻辑（架构特定源作为主源）
+                    if user_index_url:
+                        dep_cmd.extend(["--index-url", user_index_url])
+                        seen = {user_index_url}
+                        if index_url and index_url not in seen:
+                            dep_cmd.extend(["--extra-index-url", index_url])
+                            seen.add(index_url)
+                        for extra_url in user_extra_index_urls:
+                            if extra_url not in seen:
+                                dep_cmd.extend(["--extra-index-url", extra_url])
+                                seen.add(extra_url)
+                    elif index_url:
                         dep_cmd.extend(["--index-url", index_url])
+                        for extra_url in user_extra_index_urls:
+                            if extra_url != index_url:
+                                dep_cmd.extend(["--extra-index-url", extra_url])
+
+                    if pip_timeout:
+                        dep_cmd.extend(["--timeout", str(pip_timeout)])
+                    if pip_proxy:
+                        dep_cmd.extend(["--proxy", pip_proxy])
 
                     # 指定目标平台
                     if pip_platform:

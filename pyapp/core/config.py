@@ -37,6 +37,12 @@ class PyAppConfig:
     app_module: str = ""
     port: int = 18080
 
+    # 公共 pip 配置（三个平台共用，可被平台特定配置覆盖）
+    pip_index_url: str = ""
+    pip_extra_index_urls: List[str] = field(default_factory=list)
+    pip_timeout: int = 120
+    pip_proxy: str = ""
+
     # 平台配置
     android: Dict[str, Any] = field(default_factory=dict)
     windows: Dict[str, Any] = field(default_factory=dict)
@@ -79,6 +85,10 @@ class AppConfig:
             python_version=pyapp_data.get("python_version", "3.10"),
             app_module=app_module,
             port=pyapp_data.get("port", 18080),
+            pip_index_url=pyapp_data.get("pip_index_url", ""),
+            pip_extra_index_urls=pyapp_data.get("pip_extra_index_urls", []),
+            pip_timeout=pyapp_data.get("pip_timeout", 120),
+            pip_proxy=pyapp_data.get("pip_proxy", ""),
             android=pyapp_data.get("android", {}),
             windows=pyapp_data.get("windows", {}),
             linux=pyapp_data.get("linux", {}),
@@ -221,6 +231,10 @@ class AppConfig:
                     "python_version": self.pyapp.python_version,
                     "app_module": self.pyapp.app_module,
                     "port": self.pyapp.port,
+                    "pip_index_url": self.pyapp.pip_index_url,
+                    "pip_extra_index_urls": self.pyapp.pip_extra_index_urls,
+                    "pip_timeout": self.pyapp.pip_timeout,
+                    "pip_proxy": self.pyapp.pip_proxy,
                     "android": self.pyapp.android,
                     "windows": self.pyapp.windows,
                     "linux": self.pyapp.linux,

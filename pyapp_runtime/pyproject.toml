@@ -6,7 +6,26 @@ build-backend = "setuptools.build_meta"
 name = "pyapp-runtime"
 version = "0.1.0"
 description = "Runtime lifecycle utilities for PyApp-packaged applications"
+readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Jzhenli", email = "jzhenli.dev@gmail.com"},
+]
+keywords = ["pyapp", "fastapi", "uvicorn", "lifecycle", "shutdown", "android", "chaquopy"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: FastAPI",
+    "Topic :: System :: Systems Administration",
+]
 dependencies = [
     "fastapi>=0.100.0",
     "uvicorn>=0.20.0",
@@ -16,7 +35,15 @@ dependencies = [
 dev = [
     "pytest>=7.0.0",
     "httpx>=0.24.0",
+    "build>=1.0.0",
+    "twine>=4.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Jzhenli/pyapp"
+Repository = "https://github.com/Jzhenli/pyapp"
+Documentation = "https://github.com/Jzhenli/pyapp/tree/main/pyapp_runtime#readme"
+Issues = "https://github.com/Jzhenli/pyapp/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

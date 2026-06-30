@@ -183,7 +183,7 @@ def test_init_project():
         assert (project_dir / "pyproject.toml").exists()
         assert (project_dir / "src" / "my_app" / "__init__.py").exists()
         assert (project_dir / "src" / "my_app" / "__main__.py").exists()
-        assert (project_dir / "src" / "my_app" / "app.py").exists()
+        assert (project_dir / "src" / "my_app" / "main.py").exists()
         assert (project_dir / "frontend" / "package.json").exists()
         assert (project_dir / ".gitignore").exists()
     finally:
@@ -197,7 +197,7 @@ def test_init_basic_template():
         init_project("simple-tool", template="basic", output_dir=str(tmpdir / "simple-tool"))
         project_dir = tmpdir / "simple-tool"
         assert (project_dir / "pyproject.toml").exists()
-        assert (project_dir / "src" / "simple_tool" / "app.py").exists()
+        assert (project_dir / "src" / "simple_tool" / "main.py").exists()
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 test("init basic 模板", test_init_basic_template)
