@@ -49,8 +49,8 @@ DEFINE_GUID(IID_IUnknown,
 #define WM_SHOWMAINWINDOW   (WM_USER + 2)
 #define TRAYICON_ID         1
 #define TIMER_SERVER_WAIT   1001
-#define TIMER_SERVER_INTERVAL_MS 300
-#define SERVER_WAIT_TIMEOUT_SEC 30
+#define TIMER_SERVER_INTERVAL_MS 500
+#define SERVER_WAIT_TIMEOUT_SEC 60
 
 // ========== Application Configuration ==========
 
