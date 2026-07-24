@@ -1025,12 +1025,17 @@ def start_server(port: int, app_dir: str, data_dir: str) -> str:
             # 优先用 pyapp_runtime 的统一 API，回退到用户自定义的 create_server。
             try:
                 from pyapp_runtime import create_server as _create_server
-                from {app_module}.main import app as _app
-                server = _create_server(_app, host="127.0.0.1", port=port, access_log=False)
+                try:
+                    # 优先用项目级 create_app（由 {app_module}.__init__ 导出）
+                    from {app_module} import create_app as _create_app
+                    _app = _create_app()
+                except ImportError:
+                    from {app_module}.main import app as _app
+                server = _create_server(_app, host="0.0.0.0", port=port, access_log=False)
             except ImportError:
                 # 旧项目（未安装 pyapp-runtime）：回退到用户 main.py 中的 create_server
                 from {app_module}.main import create_server
-                server = create_server(host="127.0.0.1", port=port, access_log=False)
+                server = create_server(host="0.0.0.0", port=port, access_log=False)
             with _lock:
                 _server = server
 
