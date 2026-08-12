@@ -5,6 +5,7 @@ if [ ! -x "$PYTHON" ]; then
   echo "Error: Python runtime not found" >&2
   exit 1
 fi
+export PYTHONHOME="${SCRIPT_DIR}/runtime"
 export PYTHONPATH="${SCRIPT_DIR}/{{ app_name }}-{{ version }}/app:${SCRIPT_DIR}/{{ app_name }}-{{ version }}/app_packages"
 export APP_VERSION="{{ version }}"
 exec -a "{{ app_module }}" "$PYTHON" -s -m {{ app_module }} "$@"
