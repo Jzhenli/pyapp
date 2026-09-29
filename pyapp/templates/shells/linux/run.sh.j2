@@ -1,11 +1,24 @@
 #!/bin/bash
 SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
-PYTHON="${SCRIPT_DIR}/runtime/bin/python{{ python_version }}"
-if [ ! -x "$PYTHON" ]; then
-  echo "Error: Python runtime not found" >&2
-  exit 1
+PYTHONHOME_DIR="${SCRIPT_DIR}/runtime"
+
+PYTHON_REAL="${PYTHONHOME_DIR}/bin/python{{ python_version }}"
+PYTHON="${PYTHONHOME_DIR}/bin/{{ app_module }}"
+
+if [ ! -e "$PYTHON" ] || ! [ "$PYTHON_REAL" -ef "$PYTHON" ]; then
+    if ! ln -f "$PYTHON_REAL" "$PYTHON" 2>/dev/null; then
+        echo "Warning: cannot create {{ app_module }} link, falling back to direct execution" >&2
+        PYTHON="$PYTHON_REAL"
+    fi
 fi
-export PYTHONHOME="${SCRIPT_DIR}/runtime"
+
+if [ ! -x "$PYTHON" ]; then
+    echo "Error: Python runtime not found" >&2
+    exit 1
+fi
+
+export PYTHONHOME="${PYTHONHOME_DIR}"
 export PYTHONPATH="${SCRIPT_DIR}/{{ app_name }}-{{ version }}/app:${SCRIPT_DIR}/{{ app_name }}-{{ version }}/app_packages"
 export APP_VERSION="{{ version }}"
+
 exec -a "{{ app_module }}" "$PYTHON" -s -m {{ app_module }} "$@"

@@ -1,15 +1,15 @@
 [Unit]
 Description={{ app_name }}
-After=network.target
+After=network-online.target rc-local.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory={{ install_dir }}
 ExecStart={{ install_dir }}/run.sh
-Restart=on-failure
+Restart=always
 RestartSec=5
-
 Environment=APP_MODE=production
 
 [Install]
