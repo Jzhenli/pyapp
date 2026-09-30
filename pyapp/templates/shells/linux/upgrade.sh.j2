@@ -1,0 +1,100 @@
+#!/bin/bash
+set -e
+
+APP_NAME="{{ app_name }}"
+SERVICE_NAME="{{ service_name }}"
+INSTALL_DIR="{{ install_dir }}"
+UPDATE_DIR="/home/update"
+
+# Check if we need sudo
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=""
+else
+  SUDO="sudo"
+fi
+
+# No upgrade package: nothing to do (runs on every boot from rc-local).
+# Package keeps its original name, e.g. /home/update/XPlay-3.0.6-linux-armv7l.tar.gz;
+# with several packages present, the most recently transferred one wins.
+# Checked before staging so no-op boots skip the /tmp copy entirely.
+UPGRADE_PKG=$(ls -t "$UPDATE_DIR"/${APP_NAME}-*-linux-*.tar.gz 2>/dev/null | head -1)
+if [ -z "$UPGRADE_PKG" ]; then
+  exit 0
+fi
+
+# Re-exec from a staging copy so the installer can safely replace this
+# script while it is running (in-place overwrite would corrupt the reader)
+STAGED_COPY="/tmp/${SERVICE_NAME}-upgrade-staged.sh"
+if [ "$1" != "--staged" ]; then
+  cp "$0" "$STAGED_COPY"
+  exec bash "$STAGED_COPY" --staged "$@"
+fi
+shift
+trap 'rm -f "$STAGED_COPY"' EXIT
+
+echo "Upgrading $APP_NAME from $UPGRADE_PKG..."
+
+# Optional integrity check when a .sha256 sidecar is provided
+if [ -f "$UPGRADE_PKG.sha256" ]; then
+  EXPECTED=$(cut -d' ' -f1 "$UPGRADE_PKG.sha256" | tr -d '\r')
+  ACTUAL=$(sha256sum "$UPGRADE_PKG" | cut -d' ' -f1)
+  if [ "$EXPECTED" != "$ACTUAL" ]; then
+    echo "Error: sha256 mismatch for $UPGRADE_PKG" >&2
+    exit 1
+  fi
+fi
+
+# Move current installation aside for rollback. If a previous upgrade was
+# interrupted after the move, INSTALL_DIR is gone and BACKUP_DIR holds the
+# only good copy: keep it so this run can still install (and roll back).
+BACKUP_DIR="${INSTALL_DIR}.bak"
+if [ -d "$INSTALL_DIR" ]; then
+  $SUDO rm -rf "$BACKUP_DIR"
+  $SUDO mv "$INSTALL_DIR" "$BACKUP_DIR"
+elif [ -d "$BACKUP_DIR" ]; then
+  echo "Warning: $INSTALL_DIR missing, previous upgrade interrupted; keeping $BACKUP_DIR for rollback" >&2
+fi
+
+# Extract the upgrade bundle and run its own installer
+STAGE_DIR="/tmp/${SERVICE_NAME}-upgrade"
+$SUDO rm -rf "$STAGE_DIR"
+$SUDO mkdir -p "$STAGE_DIR"
+if ! $SUDO tar -xzf "$UPGRADE_PKG" -C "$STAGE_DIR"; then
+  echo "Error: failed to extract $UPGRADE_PKG" >&2
+  $SUDO mv "$BACKUP_DIR" "$INSTALL_DIR"
+  exit 1
+fi
+
+# Locate the installer inside the bundle's top directory
+PKG_SCRIPT=""
+for dir in "$STAGE_DIR"/*/; do
+  if [ -f "${dir}install.sh" ]; then PKG_SCRIPT="${dir}install.sh"; break; fi
+done
+if [ -z "$PKG_SCRIPT" ]; then
+  echo "Error: install.sh not found in upgrade package" >&2
+  $SUDO mv "$BACKUP_DIR" "$INSTALL_DIR"
+  exit 1
+fi
+
+if $SUDO bash "$PKG_SCRIPT"; then
+  $SUDO rm -rf "$BACKUP_DIR" "$STAGE_DIR" "$UPGRADE_PKG" "$UPGRADE_PKG.sha256"
+  echo "Upgrade complete."
+else
+  echo "Error: upgrade failed, rolling back to previous version" >&2
+  $SUDO rm -rf "$STAGE_DIR" "$INSTALL_DIR"
+  $SUDO mv "$BACKUP_DIR" "$INSTALL_DIR"
+  exit 1
+fi
+
+# Integration: called from the OTA deploy script (e.g. xcontrol_deploy.sh)
+# inside the vendor OTA branch, BEFORE its cleanup + reboot. The deploy
+# script moves our package out of the OTA payload, then calls us:
+#   mv -f /home/update/update/{{ app_name }}/*-linux-*.tar.gz* /home/update/ 2>/dev/null
+#   /opt/{{ service_name }}/upgrade.sh || logger -t {{ service_name }} "upgrade failed"
+# First install (upgrade.sh not yet deployed): the deploy script extracts the
+# bundle and runs install.sh directly, which installs this script to
+# /opt/{{ service_name }}/upgrade.sh for subsequent upgrades.
+# Optional every-boot retry line in start.sh (post-OTA section) enables
+# auto-retry after failed upgrades and app-only upgrades without a full OTA.
+# Generate checksum on the build machine before transfer:
+#   sha256sum <pkg>.tar.gz > <pkg>.tar.gz.sha256
