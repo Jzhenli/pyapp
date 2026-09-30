@@ -6,16 +6,16 @@ APP_DIR="${SCRIPT_DIR}/{{ app_name }}-{{ version }}"
 PYTHON_REAL="${PYTHONHOME_DIR}/bin/python{{ python_version }}"
 PYTHON="${PYTHONHOME_DIR}/bin/{{ app_module }}"
 
-if [ ! -e "$PYTHON" ] || ! [ "$PYTHON_REAL" -ef "$PYTHON" ]; then
-    ln -f "$PYTHON_REAL" "$PYTHON" 2>/dev/null || {
-        echo "Warning: cannot create {{ app_module }} link, falling back to direct execution" >&2
-        PYTHON="$PYTHON_REAL"
-    }
-fi
-
-if [ ! -x "$PYTHON" ]; then
+if [ ! -x "$PYTHON_REAL" ]; then
     echo "Error: Python runtime not found" >&2
     exit 1
+fi
+
+if ! [ "$PYTHON_REAL" -ef "$PYTHON" ]; then
+    ln -f "$PYTHON_REAL" "$PYTHON" 2>/dev/null || {
+        echo "Warning: cannot create {{ app_module }} link, using $PYTHON_REAL" >&2
+        PYTHON="$PYTHON_REAL"
+    }
 fi
 
 export PYTHONHOME="${PYTHONHOME_DIR}"
