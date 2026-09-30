@@ -80,10 +80,12 @@ class LinuxPlatform(BasePlatform):
         # 渲染脚本
         self._render_template(jinja_env, "run.sh.j2", bundle_dir / "run.sh", template_vars)
         self._render_template(jinja_env, "install.sh.j2", bundle_dir / "install.sh", template_vars)
+        self._render_template(jinja_env, "uninstall.sh.j2", bundle_dir / "uninstall.sh", template_vars)
+        self._render_template(jinja_env, "upgrade.sh.j2", bundle_dir / "upgrade.sh", template_vars)
         self._render_template(jinja_env, "app.service.j2", bundle_dir / f"{service_name}.service", template_vars)
 
         # 设置脚本可执行权限
-        for script in ["run.sh", "install.sh"]:
+        for script in ["run.sh", "install.sh", "uninstall.sh", "upgrade.sh"]:
             script_path = bundle_dir / script
             if script_path.exists():
                 try:

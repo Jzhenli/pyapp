@@ -21,7 +21,9 @@ $SUDO mkdir -p "$INSTALL_DIR"
 $SUDO cp -r "$(dirname "$0")/runtime" "$INSTALL_DIR/"
 $SUDO cp -r "$(dirname "$0")/$APP_NAME-{{ version }}" "$INSTALL_DIR/"
 $SUDO cp "$(dirname "$0")/run.sh" "$INSTALL_DIR/"
-$SUDO chmod +x "$INSTALL_DIR/run.sh"
+$SUDO cp "$(dirname "$0")/uninstall.sh" "$INSTALL_DIR/"
+$SUDO cp "$(dirname "$0")/upgrade.sh" "$INSTALL_DIR/"
+$SUDO chmod +x "$INSTALL_DIR/run.sh" "$INSTALL_DIR/uninstall.sh" "$INSTALL_DIR/upgrade.sh"
 
 # Install systemd service if available
 if command -v systemctl >/dev/null 2>&1; then

@@ -1,0 +1,35 @@
+#!/bin/bash
+set -e
+
+APP_NAME="{{ app_name }}"
+SERVICE_NAME="{{ service_name }}"
+INSTALL_DIR="{{ install_dir }}"
+
+# Check if we need sudo
+if [ "$(id -u)" -eq 0 ]; then
+  SUDO=""
+else
+  SUDO="sudo"
+fi
+
+echo "Uninstalling $APP_NAME..."
+
+# Safety guard: only remove a non-empty directory under /opt
+case "$INSTALL_DIR" in
+  /opt/?*) ;;
+  *) echo "Error: unsafe INSTALL_DIR: $INSTALL_DIR" >&2; exit 1 ;;
+esac
+
+# Stop and disable service (tolerate not-installed service)
+if command -v systemctl >/dev/null 2>&1; then
+  $SUDO systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+  $SUDO systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+  $SUDO rm -f "/etc/systemd/system/$SERVICE_NAME.service"
+  $SUDO systemctl daemon-reload
+fi
+
+# Remove install directory. This script lives inside it; bash keeps the
+# open file readable after unlink, so execution continues to completion.
+$SUDO rm -rf "$INSTALL_DIR"
+
+echo "Uninstallation complete."
