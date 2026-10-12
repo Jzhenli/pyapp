@@ -1020,22 +1020,25 @@ def start_server(port: int, app_dir: str, data_dir: str) -> str:
 
             # create_server(app, ...) returns the uvicorn.Server handle without running.
             # _server is published before run() so stop_server() can flip should_exit.
-            # 兼容性：用户 main.py 可能有本地 create_server(host, port, access_log) 包装器
-            # （旧模板），也可能没有（新模板，依赖 pyapp_runtime.create_server(app, ...)）。
-            # 优先用 pyapp_runtime 的统一 API，回退到用户自定义的 create_server。
+            # 兼容性：优先用项目 main.py 自带的 create_server（复杂项目，如 XAgentServer：
+            # 封装 Gateway/插件等完整生命周期），ImportError（简单 fastapi 模板项目没有
+            # 本地 create_server）时才回退 pyapp_runtime.create_server(app) 裸 FastAPI 路径。
+            # 注意不能用"能否 import pyapp_runtime"作为判据：复杂项目也可能同时依赖
+            # pyapp_runtime（如 XAgent 的 run.py 使用其 set_server），该判据会把复杂项目
+            # 错配到裸 FastAPI 路径，导致其自定义生命周期（设备插件启动等）不被执行。
             try:
-                from pyapp_runtime import create_server as _create_server
+                from {app_module}.main import create_server
+                server = create_server(host="0.0.0.0", port=port, access_log=False)
+            except ImportError:
+                # 简单项目（无自定义 create_server）：用 pyapp_runtime 统一 API
                 try:
                     # 优先用项目级 create_app（由 {app_module}.__init__ 导出）
                     from {app_module} import create_app as _create_app
                     _app = _create_app()
                 except ImportError:
                     from {app_module}.main import app as _app
+                from pyapp_runtime import create_server as _create_server
                 server = _create_server(_app, host="0.0.0.0", port=port, access_log=False)
-            except ImportError:
-                # 旧项目（未安装 pyapp-runtime）：回退到用户 main.py 中的 create_server
-                from {app_module}.main import create_server
-                server = create_server(host="0.0.0.0", port=port, access_log=False)
             with _lock:
                 _server = server
 
