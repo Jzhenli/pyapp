@@ -78,6 +78,73 @@ PYTHON_VERSIONS = {
 # 默认 Python 版本（当配置的版本不存在时使用）
 DEFAULT_PYTHON_VERSION = "3.10"
 
+# PBS install_only 运行时中分发场景不需要的目录（相对 runtime 根目录）
+# 仅编译期使用的头文件、man 文档和 pkg-config 描述
+RUNTIME_PRUNE_DIRS = (
+    "include",
+    "share",
+    "lib/pkgconfig",
+)
+
+# Tcl/Tk 原生运行时（与 tkinter 纯 Python 包配套裁剪，glob 模式，相对 runtime 根目录）
+RUNTIME_PRUNE_GLOBS = (
+    "lib/tcl*",     # Tcl 脚本库 (tcl9.0, tcl9)
+    "lib/tk*",      # Tk 脚本库 (tk9.0)
+    "lib/libtcl*",  # Tcl 动态库
+    "lib/libtk*",   # Tk 动态库
+    "lib/itcl*",    # itcl（Tcl OO 扩展）
+    "lib/thread*",  # thread（Tcl 线程扩展）
+)
+
+# 标准库中分发场景不需要的模块目录（相对 lib/python3.x/）
+# 注意：不触碰 encodings 等运行核心；lib-dynload 仅按下方模式选择性移除测试/Tk 扩展
+STDLIB_PRUNE_DIRS = (
+    "test",        # CPython 自带测试套件（体积最大）
+    "idlelib",     # IDLE
+    "tkinter",     # GUI，服务端/无头场景不需要
+    "turtledemo",
+    "lib2to3",
+    "ensurepip",
+    "venv",
+    "pydoc_data",  # pydoc 离线文档数据（pydoc 命令已裁剪）
+)
+
+# lib-dynload 中分发场景不需要的扩展模块（glob 模式）
+LIB_DYNLOAD_PRUNE_PATTERNS = (
+    "_tkinter*",       # Tk C 绑定（tkinter 包已裁剪时为死重）
+    "_test*",          # CPython 构建测试扩展
+    "_ctypes_test*",   # ctypes 测试扩展
+    "xxlimited*",      # C-API 示例扩展（x86_64/aarch64 构建中存在）
+    "xxsubtype*",      # C-API 示例扩展
+    "_xxtestfuzz*",    # fuzz 测试扩展
+)
+
+# 标准库中分发场景不需要的单文件模块（相对 lib/python3.x/）
+STDLIB_PRUNE_FILES = (
+    "turtle.py",
+)
+
+# 标准库中仅编译期使用的目录（glob 模式，相对 lib/python3.x/）
+STDLIB_PRUNE_GLOBS = (
+    "config-*",    # libpython*.a 静态库 + Makefile
+)
+
+# bin 目录中分发场景不需要的辅助脚本（python 本体不动）
+BIN_PRUNE_PATTERNS = (
+    "idle*",
+    "pydoc*",
+    "2to3*",
+    "python*-config",
+)
+
+# site-packages 中可能残留的包管理器（install_only 通常不自带，防御性清理）
+SITE_PACKAGES_PRUNE_PATTERNS = (
+    "pip*",
+    "setuptools*",
+    "pkg_resources*",
+    "wheel*",
+)
+
 
 class RuntimeManager:
     """Python 运行时管理器"""
@@ -321,3 +388,93 @@ class RuntimeManager:
 
         self.logger.success(f"Runtime extracted to {target_dir}")
         return target_dir
+
+    def prune_runtime(self, runtime_dir: Path) -> float:
+        """
+        裁剪 PBS install_only 运行时中分发场景不需要的内容
+
+        仅删除 test/idlelib/tkinter/头文件/静态库等明确的非必需项，
+        不触碰 lib-dynload、encodings、libpython 动态库等运行核心。
+
+        Args:
+            runtime_dir: 运行时根目录 (bundles/linux/runtime)
+
+        Returns:
+            float: 释放的空间（MB），无可裁剪内容时为 0
+        """
+        runtime_dir = Path(runtime_dir)
+        if not runtime_dir.is_dir():
+            return 0.0
+
+        freed_bytes = 0
+
+        def _size(path: Path) -> int:
+            try:
+                if path.is_symlink():
+                    return 0
+                if path.is_file():
+                    return path.stat().st_size
+                return sum(
+                    f.stat().st_size
+                    for f in path.rglob("*")
+                    if f.is_file() and not f.is_symlink()
+                )
+            except OSError:
+                return 0
+
+        def _remove(path: Path) -> None:
+            nonlocal freed_bytes
+            try:
+                if not path.exists() and not path.is_symlink():
+                    return
+                freed_bytes += _size(path)
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except OSError as e:
+                self.logger.warning(f"Failed to prune {path}: {e}")
+
+        # 1. 根目录级别：头文件 / man 文档 / pkgconfig / Tcl-Tk 原生运行时
+        for rel in RUNTIME_PRUNE_DIRS:
+            _remove(runtime_dir / rel)
+        for pattern in RUNTIME_PRUNE_GLOBS:
+            for p in runtime_dir.glob(pattern):
+                _remove(p)
+
+        # 2. 标准库级别
+        lib_root = runtime_dir / "lib"
+        for stdlib_dir in lib_root.glob("python3.*"):
+            if not stdlib_dir.is_dir():
+                continue
+            for name in STDLIB_PRUNE_DIRS:
+                _remove(stdlib_dir / name)
+            for name in STDLIB_PRUNE_FILES:
+                _remove(stdlib_dir / name)
+            for pattern in STDLIB_PRUNE_GLOBS:
+                for p in stdlib_dir.glob(pattern):
+                    _remove(p)
+            # lib-dynload 中的 Tk 绑定与测试扩展
+            lib_dynload = stdlib_dir / "lib-dynload"
+            if lib_dynload.is_dir():
+                for pattern in LIB_DYNLOAD_PRUNE_PATTERNS:
+                    for p in lib_dynload.glob(pattern):
+                        _remove(p)
+            # site-packages 中可能残留的包管理器
+            site_packages = stdlib_dir / "site-packages"
+            if site_packages.is_dir():
+                for pattern in SITE_PACKAGES_PRUNE_PATTERNS:
+                    for p in site_packages.glob(pattern):
+                        _remove(p)
+
+        # 3. bin 目录中的辅助脚本（python 本体不动）
+        bin_dir = runtime_dir / "bin"
+        if bin_dir.is_dir():
+            for pattern in BIN_PRUNE_PATTERNS:
+                for p in bin_dir.glob(pattern):
+                    _remove(p)
+
+        freed_mb = freed_bytes / (1024 * 1024)
+        if freed_mb > 0:
+            self.logger.success(f"Runtime pruned, saved {freed_mb:.1f} MB")
+        return freed_mb

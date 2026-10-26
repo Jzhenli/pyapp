@@ -140,6 +140,10 @@ class LinuxPlatform(BasePlatform):
             runtime_dir = bundle_dir / "runtime"
             runtime_manager.get_runtime("linux", python_version, runtime_dir, arch=arch)
 
+            # 裁剪运行时中分发场景不需要的内容（可通过 [tool.pyapp.linux] prune_runtime = false 关闭）
+            if config.get("tool", {}).get("pyapp", {}).get("linux", {}).get("prune_runtime", True):
+                runtime_manager.prune_runtime(runtime_dir)
+
             # 3. 同步 Python 源码
             self.logger.step(2, 6, "Syncing Python source code")
             self.sync_source_code(project_dir, "linux", config)
