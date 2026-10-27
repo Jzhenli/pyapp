@@ -135,6 +135,7 @@ BIN_PRUNE_PATTERNS = (
     "pydoc*",
     "2to3*",
     "python*-config",
+    "pip*",        # pip 启动脚本（pip 包已在 site-packages 中裁剪，脚本为死脚本）
 )
 
 # site-packages 中可能残留的包管理器（install_only 通常不自带，防御性清理）
